@@ -211,10 +211,14 @@ fn render_variables_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl 
         .child(
             h_flex()
                 .w_full()
+                .gap_2()
                 .items_center()
                 .justify_between()
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
                         .text_xs()
                         .font_semibold()
                         .text_color(solid(TEXT_PRIMARY))
@@ -223,6 +227,7 @@ fn render_variables_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl 
                 .child(
                     h_flex()
                         .gap_1()
+                        .flex_shrink_0()
                         .child(
                             Button::new("vars-import-env")
                                 .with_size(Size::XSmall)
@@ -246,8 +251,9 @@ fn render_variables_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl 
                             .child(
                                 Button::new("vars-delete-env")
                                     .with_size(Size::XSmall)
-                                    .ghost()
+                                    .danger()
                                     .icon(IconName::Delete)
+                                    .label("Delete")
                                     .tooltip("Delete this environment")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.delete_active_environment(window, cx);

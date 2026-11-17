@@ -24,6 +24,22 @@ pub fn default_environments() -> Vec<Environment> {
     Vec::new()
 }
 
+/// Picks the next sequential `Environment <N>` name based on the current count,
+/// skipping any numbers already taken so names never collide.
+pub fn next_environment_name(environments: &[Environment]) -> String {
+    let mut idx = environments.len() + 1;
+    loop {
+        let candidate = format!("Environment {idx}");
+        if !environments
+            .iter()
+            .any(|e| e.name.eq_ignore_ascii_case(&candidate))
+        {
+            return candidate;
+        }
+        idx += 1;
+    }
+}
+
 /// Parses `.env` text (`KEY=VALUE`, optional `export ` prefix, `#` comments, quoted values).
 pub fn parse_dotenv(text: &str) -> Vec<KeyValueRow> {
     let mut rows = Vec::new();
@@ -76,5 +92,21 @@ EMPTY=
         assert_eq!(rows[2].value, "hello_world");
         assert_eq!(rows[3].key, "EMPTY");
         assert_eq!(rows[3].value, "");
+    }
+
+    #[test]
+    fn picks_next_environment_name_by_count_without_collisions() {
+        assert_eq!(next_environment_name(&[]), "Environment 1");
+
+        let four = vec![
+            Environment::new("Environment 1", vec![]),
+            Environment::new("Environment 2", vec![]),
+            Environment::new("Environment 3", vec![]),
+            Environment::new("Environment 4", vec![]),
+        ];
+        assert_eq!(next_environment_name(&four), "Environment 5");
+
+        let with_gap = vec![Environment::new("Environment 2", vec![])];
+        assert_eq!(next_environment_name(&with_gap), "Environment 3");
     }
 }

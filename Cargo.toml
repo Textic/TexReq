@@ -1,6 +1,6 @@
 [package]
 name = "texreq"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
 description = "Minimalist, local-first GPU API client with zero gradients built with GPUI-Kit"
 

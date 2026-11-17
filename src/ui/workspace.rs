@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use crate::models::{
     AppSettings, CollectionFolder, Environment, HistoryEntry, KeyValueRow, RequestItem,
-    RequestKind, StreamStatus, parse_dotenv,
+    RequestKind, StreamStatus, next_environment_name, parse_dotenv,
 };
 use crate::net::WorkerEvent;
 use crate::net::curl_parser::parse_curl;
@@ -106,7 +106,6 @@ pub struct Workspace {
     pub git_commit_msg_input: Entity<gpui_kit::component::input::InputState>,
     pub update_state: UpdateState,
     pub folder_counter: usize,
-    pub env_counter: usize,
     pub show_settings_modal: bool,
     pub settings_category: SettingsCategory,
     pub mcp_command_path: String,
@@ -170,7 +169,6 @@ impl Workspace {
         let focus_handle = cx.focus_handle();
 
         let folder_counter = collections.len();
-        let env_counter = environments.len();
         let mcp_command_path = resolve_texreq_executable();
         let mcp_statuses = inspect_all_clients(&mcp_command_path);
         let mcp_json_text = generic_mcp_json(&mcp_command_path);
@@ -206,7 +204,6 @@ impl Workspace {
             git_commit_msg_input,
             update_state: UpdateState::Idle,
             folder_counter,
-            env_counter,
             show_settings_modal: false,
             settings_category: SettingsCategory::General,
             mcp_command_path,
@@ -1173,11 +1170,8 @@ impl Workspace {
 
     pub fn create_environment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_active_env_vars_silent(cx);
-        self.env_counter += 1;
-        let env = Environment::new(
-            format!("Environment {}", self.env_counter),
-            Vec::new(),
-        );
+        let name = next_environment_name(&self.environments);
+        let env = Environment::new(name, Vec::new());
         let new_id = env.id.clone();
         self.environments.push(env);
         self.store.save_environments(&self.environments);
@@ -2091,9 +2085,20 @@ impl Render for Workspace {
                                             let v_del = view.clone();
                                             menu = menu.separator();
                                             menu = menu.item(
-                                                PopupMenuItem::new(format!(
-                                                    "Delete \"{del_name}\""
-                                                ))
+                                                PopupMenuItem::element(move |_, _| {
+                                                    h_flex()
+                                                        .gap_1p5()
+                                                        .items_center()
+                                                        .text_color(solid(COLOR_DELETE))
+                                                        .child(
+                                                            Icon::new(IconName::Delete)
+                                                                .size_3p5()
+                                                                .text_color(solid(COLOR_DELETE)),
+                                                        )
+                                                        .child(SharedString::from(format!(
+                                                            "Delete \"{del_name}\""
+                                                        )))
+                                                })
                                                 .on_click(move |_, window, app| {
                                                     v_del.update(app, |this, cx| {
                                                         this.delete_environment(
