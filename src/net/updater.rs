@@ -76,18 +76,22 @@ pub fn pick_asset_url_for_target<'a>(
     };
 
     match os {
-        "windows" => find(&|n| n.contains("windows") && n.ends_with(".exe"))
+        "windows" => find(&|n| n.contains("windows") && n.ends_with("-setup.exe"))
+            .or_else(|| find(&|n| n.contains("windows") && n.ends_with(".exe")))
             .or_else(|| find(&|n| n.contains("windows") && n.ends_with(".zip"))),
         "macos" => {
             if arch == "aarch64" {
-                find(&|n| n.contains("macos") && (n.contains("arm64") || n.contains("aarch64")))
-                    .or_else(|| find(&|n| n.contains("macos") && n.ends_with(".zip")))
+                find(&|n| n.contains("macos") && (n.contains("arm64") || n.contains("aarch64")) && n.ends_with(".dmg"))
+                    .or_else(|| find(&|n| n.contains("macos") && (n.contains("arm64") || n.contains("aarch64")) && n.ends_with(".zip")))
+                    .or_else(|| find(&|n| n.contains("macos") && n.ends_with(".dmg")))
             } else {
-                find(&|n| n.contains("macos") && (n.contains("x86_64") || n.contains("intel")))
-                    .or_else(|| find(&|n| n.contains("macos") && n.ends_with(".zip")))
+                find(&|n| n.contains("macos") && (n.contains("x86_64") || n.contains("intel")) && n.ends_with(".dmg"))
+                    .or_else(|| find(&|n| n.contains("macos") && (n.contains("x86_64") || n.contains("intel")) && n.ends_with(".zip")))
+                    .or_else(|| find(&|n| n.contains("macos") && n.ends_with(".dmg")))
             }
         }
-        "linux" => find(&|n| n.contains("linux") && n.ends_with(".tar.gz"))
+        "linux" => find(&|n| n.contains("linux") && n.ends_with(".deb"))
+            .or_else(|| find(&|n| n.contains("linux") && n.ends_with(".tar.gz")))
             .or_else(|| find(&|n| n.contains("linux"))),
         _ => None,
     }
@@ -190,34 +194,46 @@ mod tests {
                 "https://example.com/win.exe".to_string(),
             ),
             (
+                "texreq-v0.1.1-windows-x86_64-setup.exe".to_string(),
+                "https://example.com/win-setup.exe".to_string(),
+            ),
+            (
                 "texreq-v0.1.1-linux-x86_64.tar.gz".to_string(),
                 "https://example.com/linux.tar.gz".to_string(),
+            ),
+            (
+                "texreq-v0.1.1-linux-x86_64.deb".to_string(),
+                "https://example.com/linux.deb".to_string(),
             ),
             (
                 "texreq-v0.1.1-macos-arm64.zip".to_string(),
                 "https://example.com/mac-arm.zip".to_string(),
             ),
             (
-                "texreq-v0.1.1-macos-x86_64.zip".to_string(),
-                "https://example.com/mac-x64.zip".to_string(),
+                "texreq-v0.1.1-macos-arm64.dmg".to_string(),
+                "https://example.com/mac-arm.dmg".to_string(),
+            ),
+            (
+                "texreq-v0.1.1-macos-x86_64.dmg".to_string(),
+                "https://example.com/mac-x64.dmg".to_string(),
             ),
         ];
 
         assert_eq!(
             pick_asset_url_for_target(&assets, "windows", "x86_64"),
-            Some("https://example.com/win.exe")
+            Some("https://example.com/win-setup.exe")
         );
         assert_eq!(
             pick_asset_url_for_target(&assets, "linux", "x86_64"),
-            Some("https://example.com/linux.tar.gz")
+            Some("https://example.com/linux.deb")
         );
         assert_eq!(
             pick_asset_url_for_target(&assets, "macos", "aarch64"),
-            Some("https://example.com/mac-arm.zip")
+            Some("https://example.com/mac-arm.dmg")
         );
         assert_eq!(
             pick_asset_url_for_target(&assets, "macos", "x86_64"),
-            Some("https://example.com/mac-x64.zip")
+            Some("https://example.com/mac-x64.dmg")
         );
     }
 }

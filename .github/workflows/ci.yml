@@ -14,7 +14,7 @@ env:
 
 jobs:
   check:
-    name: Build & Test (${{ matrix.name }})
+    name: Build & Package (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -41,7 +41,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            pkg-config cmake clang \
+            pkg-config cmake clang dpkg-dev \
             libssl-dev libfontconfig1-dev libfreetype-dev \
             libxkbcommon-dev libxkbcommon-x11-dev \
             libwayland-dev libxcb1-dev libxcb-render0-dev \
@@ -57,17 +57,31 @@ jobs:
         with:
           key: ${{ matrix.name }}
 
-      - name: Run unit tests (Windows & Linux)
-        if: matrix.os != 'macos'
-        run: cargo test --locked --target ${{ matrix.targets }}
+      - name: Test, build & verify Windows installer
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          cargo test --locked --target x86_64-pc-windows-msvc
+          cargo build --release --locked --target x86_64-pc-windows-msvc
+          & .\packaging\windows\build-setup.ps1 `
+            -BinaryPath "target\x86_64-pc-windows-msvc\release\texreq.exe" `
+            -Version "0.0.0" `
+            -Tag "ci" `
+            -OutDir "dist"
 
-      - name: Build release binary (Windows & Linux)
-        if: matrix.os != 'macos'
-        run: cargo build --release --locked --target ${{ matrix.targets }}
+      - name: Test, build & verify Linux .deb + tarball
+        if: matrix.os == 'linux'
+        run: |
+          cargo test --locked --target x86_64-unknown-linux-gnu
+          cargo build --release --locked --target x86_64-unknown-linux-gnu
+          bash packaging/linux/build-deb.sh "target/x86_64-unknown-linux-gnu/release/texreq" "0.0.0" "ci" "dist"
+          dpkg-deb -I dist/texreq-ci-linux-x86_64.deb
 
-      - name: Test & build macOS (Intel & Apple Silicon)
+      - name: Test, build & verify macOS .dmg + .zip
         if: matrix.os == 'macos'
         run: |
           cargo test --locked --target x86_64-apple-darwin
           cargo build --release --locked --target x86_64-apple-darwin
           cargo build --release --locked --target aarch64-apple-darwin
+          bash packaging/macos/build-dmg.sh "target/aarch64-apple-darwin/release/texreq" "0.0.0" "ci" "macos-arm64" "dist"
+          bash packaging/macos/build-dmg.sh "target/x86_64-apple-darwin/release/texreq" "0.0.0" "ci" "macos-x86_64" "dist"

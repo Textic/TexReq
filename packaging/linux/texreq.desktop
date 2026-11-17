@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=TexReq
+Comment=Minimalist flat-dark desktop API client
+Exec=texreq
+Icon=texreq
+Terminal=false
+Categories=Development;WebDevelopment;Network;
+StartupWMClass=texreq

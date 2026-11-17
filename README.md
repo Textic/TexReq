@@ -21,6 +21,16 @@ Designed around a flat dark interface with crisp `1px` structural panel cuts, ze
   - Choose any local workspace directory for storing `collections.json` and `environments.toml` with built-in Git support (`init`, `commit`, `pull`, `push`).
   - Built-in update checker (checks GitHub Releases on launch and on demand under **Settings -> Updates**).
 
+## Installation
+
+Pre-built installers and binaries are published on [GitHub Releases](https://github.com/Textic/TexReq/releases):
+
+- **Windows**: Run `texreq-<version>-windows-x86_64-setup.exe` for the Start Menu / Add & Remove Programs wizard installer (or download the portable `.exe` / `.zip`).
+- **macOS**: Open `texreq-<version>-macos-arm64.dmg` (Apple Silicon) or `texreq-<version>-macos-x86_64.dmg` (Intel) and drag `TexReq.app` to `Applications`.
+- **Linux**:
+  - **Debian / Ubuntu / Mint**: `sudo apt install ./texreq-<version>-linux-x86_64.deb`
+  - **Other distros**: Extract `texreq-<version>-linux-x86_64.tar.gz` and run `./install.sh` (installs to `~/.local/bin` and `~/.local/share/applications`).
+
 ## Building & Running
 
 ### Prerequisites
@@ -47,7 +57,7 @@ cargo build
 ## Releases & Branch Workflow
 
 - `dev` branch: active development; pushes and pull requests to `main` automatically run tests and verify release builds across Windows, Linux, and macOS via GitHub Actions ([CI](.github/workflows/ci.yml)).
-- `main` branch: merging a PR or pushing to `main` automatically builds and publishes a tagged GitHub Release (`v<major>.<minor>.<patch>`) with Windows (`.exe`/`.zip`), Linux (`.tar.gz`), and macOS (`arm64` / `x86_64` `.app.zip`) binaries plus SHA-256 checksums ([Release](.github/workflows/release.yml)).
+- `main` branch: merging a PR or pushing to `main` automatically builds and publishes a tagged GitHub Release (`v<major>.<minor>.<patch>`) with native installers (`-setup.exe`, `.dmg`, `.deb`), portable archives (`.exe`/`.zip`/`.tar.gz`), and SHA-256 checksums ([Release](.github/workflows/release.yml)).
 
 ## Project Structure
 
