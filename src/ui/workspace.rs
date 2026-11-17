@@ -116,18 +116,9 @@ impl Workspace {
         let collections = store.load_collections();
         let history = store.load_history();
         let environments = store.load_environments();
-        let active_env_id = environments.first().map(|e| e.id.clone());
+        let active_env_id: Option<String> = None;
 
-        let env_var_rows = active_env_id
-            .as_ref()
-            .and_then(|id| environments.iter().find(|e| &e.id == id))
-            .map(|env| {
-                env.variables
-                    .iter()
-                    .map(|r| UiKvRow::from_model(r, window, cx))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let env_var_rows: Vec<UiKvRow> = Vec::new();
 
         let initial_tab = if let Some(first_req) = collections.first().and_then(|f| f.requests.first()) {
             TabSession::from_request(first_req, Some(first_req.id.clone()), window, cx)
@@ -165,6 +156,9 @@ impl Workspace {
 
         let focus_handle = cx.focus_handle();
 
+        let folder_counter = collections.len();
+        let env_counter = environments.len();
+
         let mut ws = Self {
             focus_handle,
             store,
@@ -188,8 +182,8 @@ impl Workspace {
             settings_timeout_input,
             settings_proxy_input,
             git_commit_msg_input,
-            folder_counter: 1,
-            env_counter: 1,
+            folder_counter,
+            env_counter,
         };
 
         ws.refresh_snippet_editor(window, cx);
@@ -365,9 +359,6 @@ impl Workspace {
     }
 
     pub fn delete_folder(&mut self, folder_id: &str, cx: &mut Context<Self>) {
-        if self.collections.len() <= 1 {
-            return;
-        }
         self.collections.retain(|f| f.id != folder_id);
         self.store.save_collections(&self.collections);
         cx.notify();
@@ -1408,7 +1399,10 @@ impl Workspace {
 
         if dir.join("environments.toml").exists() {
             self.environments = self.store.load_environments();
-            self.active_env_id = self.environments.first().map(|e| e.id.clone());
+            self.active_env_id = self
+                .active_env_id
+                .take()
+                .filter(|id| self.environments.iter().any(|e| &e.id == id));
         } else {
             self.store.save_environments(&self.environments);
         }

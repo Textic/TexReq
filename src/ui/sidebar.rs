@@ -236,8 +236,6 @@ fn render_collections_list(
     active_saved_id: Option<&str>,
     cx: &mut Context<Workspace>,
 ) -> impl IntoElement {
-    let folders_count = ws.collections.len();
-
     v_flex()
         .w_full()
         .px_2()
@@ -331,19 +329,17 @@ fn render_collections_list(
                                     this.create_request_in_folder(&folder_id_add, window, cx);
                                 })),
                         )
-                        .when(folders_count > 1, |this| {
-                            this.child(
-                                Button::new(("folder-del", f_ix))
-                                    .with_size(Size::XSmall)
-                                    .ghost()
-                                    .icon(IconName::Close)
-                                    .tooltip("Delete folder")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        cx.stop_propagation();
-                                        this.delete_folder(&folder_id_del, cx);
-                                    })),
-                            )
-                        }),
+                        .child(
+                            Button::new(("folder-del", f_ix))
+                                .with_size(Size::XSmall)
+                                .ghost()
+                                .icon(IconName::Close)
+                                .tooltip("Delete folder")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.delete_folder(&folder_id_del, cx);
+                                })),
+                        ),
                 )
                 .when(expanded, |this| {
                     this.child(

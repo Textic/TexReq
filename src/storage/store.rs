@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::models::{
-    AppSettings, CollectionFolder, Environment, HistoryEntry, default_demo_collections,
+    AppSettings, CollectionFolder, Environment, HistoryEntry, default_collections,
     default_environments,
 };
 
@@ -80,7 +80,7 @@ impl LocalStore {
         {
             return parsed;
         }
-        let defaults = default_demo_collections();
+        let defaults = default_collections();
         self.save_collections(&defaults);
         defaults
     }
@@ -167,14 +167,16 @@ mod tests {
         let mut store = LocalStore::at_dir(temp_dir.clone());
 
         let cols = store.load_collections();
-        assert!(!cols.is_empty());
-        store.save_collections(&cols);
-        assert_eq!(store.load_collections().len(), cols.len());
+        assert!(cols.is_empty());
+        let saved_cols = vec![CollectionFolder::new("API")];
+        store.save_collections(&saved_cols);
+        assert_eq!(store.load_collections().len(), 1);
 
         let envs = store.load_environments();
-        assert!(!envs.is_empty());
-        store.save_environments(&envs);
-        assert_eq!(store.load_environments().len(), envs.len());
+        assert!(envs.is_empty());
+        let saved_envs = vec![Environment::new("Prod", Vec::new())];
+        store.save_environments(&saved_envs);
+        assert_eq!(store.load_environments().len(), 1);
 
         let hist = store.load_history();
         assert!(hist.is_empty());

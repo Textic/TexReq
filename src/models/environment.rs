@@ -21,30 +21,7 @@ impl Environment {
 }
 
 pub fn default_environments() -> Vec<Environment> {
-    vec![
-        Environment::new(
-            "Local / Demo",
-            vec![
-                KeyValueRow::new("api_base", "https://jsonplaceholder.typicode.com"),
-                KeyValueRow::new("local_base", "http://127.0.0.1:8000"),
-                KeyValueRow::new("token", ""),
-            ],
-        ),
-        Environment::new(
-            "Staging",
-            vec![
-                KeyValueRow::new("api_base", "https://staging.api.example.com"),
-                KeyValueRow::new("token", ""),
-            ],
-        ),
-        Environment::new(
-            "Production",
-            vec![
-                KeyValueRow::new("api_base", "https://api.example.com"),
-                KeyValueRow::new("token", ""),
-            ],
-        ),
-    ]
+    Vec::new()
 }
 
 /// Parses `.env` text (`KEY=VALUE`, optional `export ` prefix, `#` comments, quoted values).
