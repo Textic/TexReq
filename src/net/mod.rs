@@ -3,6 +3,7 @@ pub mod http_client;
 pub mod interpolator;
 pub mod runtime;
 pub mod snippets;
+pub mod updater;
 pub mod ws_client;
 
 use crate::models::{HttpResponseData, StreamEntry, StreamStatus};

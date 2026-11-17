@@ -16,12 +16,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
-    name: Build & Publish Windows Release
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
+  prepare:
+    name: Compute Release Version
+    runs-on: ubuntu-latest
+    outputs:
+      already_tagged: ${{ steps.ver.outputs.already_tagged }}
+      cargo_version: ${{ steps.ver.outputs.cargo_version }}
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
     steps:
       - name: Checkout repository with full tag history
         uses: actions/checkout@v4
@@ -29,8 +31,9 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Resolve version and next SemVer tag
+      - name: Resolve next SemVer tag
         id: ver
+        shell: pwsh
         run: |
           $cargoToml = Get-Content -Path "Cargo.toml" -Raw
           if ($cargoToml -notmatch '(?m)^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"') {
@@ -44,8 +47,9 @@ jobs:
           $headTags = @(git tag --points-at HEAD "v*" | Where-Object { $_ -ne "" })
           if ($headTags.Count -gt 0 -and "${{ github.event_name }}" -eq "push") {
             Write-Output "already_tagged=true" >> $env:GITHUB_OUTPUT
-            Write-Output "tag=$($headTags[0])" >> $env:GITHUB_OUTPUT
+            Write-Output "cargo_version=$cargoVersion" >> $env:GITHUB_OUTPUT
             Write-Output "version=$cargoVersion" >> $env:GITHUB_OUTPUT
+            Write-Output "tag=$($headTags[0])" >> $env:GITHUB_OUTPUT
             exit 0
           }
 
@@ -73,64 +77,204 @@ jobs:
           Write-Output "version=$nextVersion" >> $env:GITHUB_OUTPUT
           Write-Output "tag=$nextTag" >> $env:GITHUB_OUTPUT
 
+  build:
+    name: Build (${{ matrix.name }})
+    needs: prepare
+    if: needs.prepare.outputs.already_tagged != 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86_64
+            os: windows
+            runner: windows-latest
+            targets: x86_64-pc-windows-msvc
+          - name: linux-x86_64
+            os: linux
+            runner: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu
+          - name: macos-arm64-x64
+            os: macos
+            runner: macos-15-intel
+            targets: x86_64-apple-darwin aarch64-apple-darwin
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux system libraries
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config cmake clang \
+            libssl-dev libfontconfig1-dev libfreetype-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libx11-dev libvulkan-dev
+
       - name: Install Rust toolchain
-        if: steps.ver.outputs.already_tagged != 'true'
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
 
       - name: Restore Cargo cache
-        if: steps.ver.outputs.already_tagged != 'true'
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
 
-      - name: Sync build version in runner Cargo.toml
-        if: steps.ver.outputs.already_tagged != 'true' && steps.ver.outputs.version != steps.ver.outputs.cargo_version
+      - name: Sync build version in runner Cargo.toml (Windows)
+        if: matrix.os == 'windows' && needs.prepare.outputs.version != needs.prepare.outputs.cargo_version
+        shell: pwsh
         run: |
           $raw = Get-Content -Path "Cargo.toml" -Raw
-          $updated = $raw -replace '(?m)^(version\s*=\s*")\d+\.\d+\.\d+(")', "`${1}${{ steps.ver.outputs.version }}`${2}"
+          $updated = $raw -replace '(?m)^(version\s*=\s*")\d+\.\d+\.\d+(")', "`${1}${{ needs.prepare.outputs.version }}`${2}"
           Set-Content -Path "Cargo.toml" -Value $updated -NoNewline
 
-      - name: Run tests
-        if: steps.ver.outputs.already_tagged != 'true'
-        run: cargo test
-
-      - name: Build release binary
-        if: steps.ver.outputs.already_tagged != 'true'
-        run: cargo build --release
-
-      - name: Package release artifacts
-        if: steps.ver.outputs.already_tagged != 'true'
+      - name: Sync build version in runner Cargo.toml (Unix)
+        if: matrix.os != 'windows' && needs.prepare.outputs.version != needs.prepare.outputs.cargo_version
         run: |
-          $tag = "${{ steps.ver.outputs.tag }}"
+          python3 -c 'import pathlib, re; p = pathlib.Path("Cargo.toml"); p.write_text(re.sub(r"(?m)^(version\s*=\s*\")\d+\.\d+\.\d+(\")", r"\g<1>${{ needs.prepare.outputs.version }}\g<2>", p.read_text()))'
+
+      - name: Test & build (Windows & Linux)
+        if: matrix.os != 'macos'
+        run: |
+          cargo test --target ${{ matrix.targets }}
+          cargo build --release --target ${{ matrix.targets }}
+
+      - name: Package Windows artifacts
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $tag = "${{ needs.prepare.outputs.tag }}"
           New-Item -ItemType Directory -Path "dist" -Force | Out-Null
 
-          $exeName = "texreq-$tag-windows-x86_64.exe"
-          $zipName = "texreq-$tag-windows-x86_64.zip"
+          $bin = "target\${{ matrix.targets }}\release\texreq.exe"
+          Copy-Item $bin "dist\texreq-$tag-windows-x86_64.exe"
 
-          Copy-Item "target\release\texreq.exe" "dist\$exeName"
+          $stage = "dist\stage"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item $bin "$stage\texreq.exe"
+          Copy-Item "README.md" "$stage\README.md"
+          Copy-Item "PLAN.md" "$stage\PLAN.md"
+          Compress-Archive -Path "$stage\*" -DestinationPath "dist\texreq-$tag-windows-x86_64.zip" -Force
+          Remove-Item -Path $stage -Recurse -Force
 
-          $zipStage = "dist\stage"
-          New-Item -ItemType Directory -Path $zipStage -Force | Out-Null
-          Copy-Item "target\release\texreq.exe" "$zipStage\texreq.exe"
-          Copy-Item "README.md" "$zipStage\README.md"
-          Copy-Item "PLAN.md" "$zipStage\PLAN.md"
-          Compress-Archive -Path "$zipStage\*" -DestinationPath "dist\$zipName" -Force
-          Remove-Item -Path $zipStage -Recurse -Force
+      - name: Package Linux artifacts
+        if: matrix.os == 'linux'
+        run: |
+          TAG="${{ needs.prepare.outputs.tag }}"
+          mkdir -p dist/stage/assets
+          cp "target/${{ matrix.targets }}/release/texreq" dist/stage/texreq
+          chmod +x dist/stage/texreq
+          cp README.md PLAN.md dist/stage/
+          cp assets/texreq.png assets/texreq.svg dist/stage/assets/
+          tar -C dist/stage -czf "dist/texreq-$TAG-linux-x86_64.tar.gz" .
+          rm -rf dist/stage
 
-          $hashes = @(
-            (Get-FileHash "dist\$exeName" -Algorithm SHA256),
-            (Get-FileHash "dist\$zipName" -Algorithm SHA256)
-          ) | ForEach-Object { "$($_.Hash.ToLowerInvariant())  $(Split-Path $_.Path -Leaf)" }
-          Set-Content -Path "dist\SHA256SUMS.txt" -Value $hashes
+      - name: Build & package macOS .app bundles (Apple Silicon & Intel)
+        if: matrix.os == 'macos'
+        run: |
+          TAG="${{ needs.prepare.outputs.tag }}"
+          VER="${{ needs.prepare.outputs.version }}"
+
+          cargo test --target x86_64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+
+          mkdir -p dist dist/TexReq.iconset
+          sips -z 16 16     assets/texreq.png --out dist/TexReq.iconset/icon_16x16.png >/dev/null
+          sips -z 32 32     assets/texreq.png --out dist/TexReq.iconset/icon_16x16@2x.png >/dev/null
+          sips -z 32 32     assets/texreq.png --out dist/TexReq.iconset/icon_32x32.png >/dev/null
+          sips -z 64 64     assets/texreq.png --out dist/TexReq.iconset/icon_32x32@2x.png >/dev/null
+          sips -z 128 128   assets/texreq.png --out dist/TexReq.iconset/icon_128x128.png >/dev/null
+          sips -z 256 256   assets/texreq.png --out dist/TexReq.iconset/icon_128x128@2x.png >/dev/null
+          sips -z 256 256   assets/texreq.png --out dist/TexReq.iconset/icon_256x256.png >/dev/null
+          sips -z 512 512   assets/texreq.png --out dist/TexReq.iconset/icon_256x256@2x.png >/dev/null
+          sips -z 512 512   assets/texreq.png --out dist/TexReq.iconset/icon_512x512.png >/dev/null
+          iconutil -c icns dist/TexReq.iconset -o dist/TexReq.icns
+
+          package_mac() {
+            local rust_target="$1"
+            local arch_label="$2"
+            local app="dist/TexReq.app"
+            rm -rf "$app"
+            mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+            cp "target/$rust_target/release/texreq" "$app/Contents/MacOS/texreq"
+            chmod +x "$app/Contents/MacOS/texreq"
+            cp dist/TexReq.icns "$app/Contents/Resources/TexReq.icns"
+
+            cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDevelopmentRegion</key>
+            <string>en</string>
+            <key>CFBundleExecutable</key>
+            <string>texreq</string>
+            <key>CFBundleIconFile</key>
+            <string>TexReq</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.textic.texreq</string>
+            <key>CFBundleInfoDictionaryVersion</key>
+            <string>6.0</string>
+            <key>CFBundleName</key>
+            <string>TexReq</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>$VER</string>
+            <key>CFBundleVersion</key>
+            <string>$VER</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+
+            ditto -c -k --sequesterRsrc --keepParent "$app" "dist/texreq-$TAG-$arch_label.zip"
+            rm -rf "$app"
+          }
+
+          package_mac aarch64-apple-darwin macos-arm64
+          package_mac x86_64-apple-darwin macos-x86_64
+          rm -rf dist/TexReq.iconset dist/TexReq.icns
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.name }}
+          path: dist/*
+
+  publish:
+    name: Publish GitHub Release
+    needs: [prepare, build]
+    if: needs.prepare.outputs.already_tagged != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-assets-*
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
 
       - name: Create tag and GitHub Release
-        if: steps.ver.outputs.already_tagged != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $tag = "${{ steps.ver.outputs.tag }}"
-          gh release create "$tag" `
-            --target "${{ github.sha }}" `
-            --title "TexReq $tag" `
-            --generate-notes `
-            "dist/texreq-$tag-windows-x86_64.exe" `
-            "dist/texreq-$tag-windows-x86_64.zip" `
-            "dist/SHA256SUMS.txt"
+          TAG="${{ needs.prepare.outputs.tag }}"
+          gh release create "$TAG" \
+            --target "${{ github.sha }}" \
+            --title "TexReq $TAG" \
+            --generate-notes \
+            dist/*
