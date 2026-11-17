@@ -41,6 +41,11 @@ cargo test
 cargo build
 ```
 
+## Releases & Branch Workflow
+
+- `dev` branch: active development; pushes and pull requests to `main` automatically run tests and verify release builds via GitHub Actions ([CI](.github/workflows/ci.yml)).
+- `main` branch: merging a PR or pushing to `main` automatically builds and publishes a tagged GitHub Release (`v<major>.<minor>.<patch>`) with Windows executables and SHA-256 checksums ([Release](.github/workflows/release.yml)).
+
 ## Project Structure
 
 ```text
