@@ -250,6 +250,18 @@ pub fn render_request_pane(
                         })),
                     )
                 })
+                .when(!is_realtime, |this| {
+                    this.child(
+                        render_flat_subtab(
+                            "rtab-body",
+                            &format!("Body · {}", tab.body_kind.label()),
+                            tab.req_subtab == RequestSubTab::Body,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_request_subtab(RequestSubTab::Body, cx);
+                        })),
+                    )
+                })
                 .child(
                     render_flat_subtab(
                         "rtab-params",
@@ -282,16 +294,6 @@ pub fn render_request_pane(
                 )
                 .when(!is_realtime, |this| {
                     this.child(
-                        render_flat_subtab(
-                            "rtab-body",
-                            &format!("Body · {}", tab.body_kind.label()),
-                            tab.req_subtab == RequestSubTab::Body,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_request_subtab(RequestSubTab::Body, cx);
-                        })),
-                    )
-                    .child(
                         render_flat_subtab(
                             "rtab-captures",
                             &format!("Captures ({captures_cnt})"),
@@ -818,7 +820,7 @@ fn render_network_panel(ws: &Workspace, cx: &mut Context<Workspace>) -> impl Int
                         .text_xs()
                         .font_semibold()
                         .text_color(solid(TEXT_PRIMARY))
-                        .child("HTTP / HTTPS Proxy (TexMITM compatible)"),
+                        .child("HTTP / HTTPS Proxy"),
                 )
                 .child(
                     h_flex()
@@ -827,15 +829,6 @@ fn render_network_panel(ws: &Workspace, cx: &mut Context<Workspace>) -> impl Int
                             div()
                                 .flex_1()
                                 .child(Input::new(&tab.proxy_input).with_size(Size::Small)),
-                        )
-                        .child(
-                            Button::new("net-texmitm")
-                                .with_size(Size::Small)
-                                .secondary()
-                                .label("TexMITM (127.0.0.1:8080)")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.set_proxy_preset("http://127.0.0.1:8080", window, cx);
-                                })),
                         )
                         .child(
                             Button::new("net-proxy-clear")

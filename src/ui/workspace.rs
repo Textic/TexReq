@@ -23,8 +23,8 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::models::{
-    AppSettings, CollectionFolder, Environment, HistoryEntry, KeyValueRow, RequestItem,
-    RequestKind, StreamStatus, next_environment_name, parse_dotenv,
+    AppSettings, CollectionFolder, Environment, HistoryEntry, KeyValueRow, MAX_ENV_NAME_CHARS,
+    RequestItem, RequestKind, StreamStatus, next_environment_name, parse_dotenv, truncate_chars,
 };
 use crate::net::WorkerEvent;
 use crate::net::curl_parser::parse_curl;
@@ -48,7 +48,7 @@ use crate::ui::request_pane::render_request_pane;
 use crate::ui::response_pane::render_response_pane;
 use crate::ui::right_drawer::render_right_rail_and_drawer;
 use crate::ui::settings_modal::{
-    SettingsCategory, render_confirm_delete_env_modal, render_settings_modal,
+    PendingConfirm, SettingsCategory, render_confirm_modal, render_settings_modal,
 };
 use crate::ui::sidebar::render_sidebar;
 use crate::ui::tab_session::{BodyKindUi, RequestSubTab, ResponseSubTab, TabSession, should_autoparse_curl};
@@ -109,7 +109,7 @@ pub struct Workspace {
     pub update_state: UpdateState,
     pub folder_counter: usize,
     pub env_name_input: Entity<gpui_kit::component::input::InputState>,
-    pub pending_delete_env: Option<(String, String)>,
+    pub pending_confirm: Option<PendingConfirm>,
     _env_name_sub: gpui_kit::Subscription,
     pub show_settings_modal: bool,
     pub settings_category: SettingsCategory,
@@ -171,10 +171,19 @@ impl Workspace {
         let _env_name_sub = cx.subscribe_in(
             &env_name_input,
             window,
-            |this, state, ev: &gpui_kit::component::input::InputEvent, _, cx| {
+            |this, state, ev: &gpui_kit::component::input::InputEvent, window, cx| {
                 match ev {
                     gpui_kit::component::input::InputEvent::Change => {
-                        let next_name = state.read(cx).value().trim().to_string();
+                        let raw = state.read(cx).value().to_string();
+                        if raw.chars().count() > MAX_ENV_NAME_CHARS {
+                            let clamped: String = raw.chars().take(MAX_ENV_NAME_CHARS).collect();
+                            let st = state.clone();
+                            window.defer(cx, move |window, cx| {
+                                st.update(cx, |s, cx| s.set_value(clamped, window, cx));
+                            });
+                        }
+                        let next_name: String =
+                            raw.trim().chars().take(MAX_ENV_NAME_CHARS).collect();
                         if !next_name.is_empty()
                             && let Some(ref env_id) = this.active_env_id
                             && let Some(env) = this.environments.iter_mut().find(|e| &e.id == env_id)
@@ -239,7 +248,7 @@ impl Workspace {
             update_state: UpdateState::Idle,
             folder_counter,
             env_name_input,
-            pending_delete_env: None,
+            pending_confirm: None,
             _env_name_sub,
             show_settings_modal: false,
             settings_category: SettingsCategory::General,
@@ -1237,20 +1246,36 @@ impl Workspace {
 
     pub fn request_delete_environment(&mut self, env_id: &str, cx: &mut Context<Self>) {
         if let Some(env) = self.environments.iter().find(|e| e.id == env_id) {
-            self.pending_delete_env = Some((env.id.clone(), env.name.clone()));
+            self.pending_confirm = Some(PendingConfirm::DeleteEnvironment {
+                id: env.id.clone(),
+                name: env.name.clone(),
+            });
             cx.notify();
         }
     }
 
-    pub fn cancel_delete_environment(&mut self, cx: &mut Context<Self>) {
-        if self.pending_delete_env.take().is_some() {
+    pub fn request_clear_history(&mut self, cx: &mut Context<Self>) {
+        if !self.history.is_empty() {
+            self.pending_confirm = Some(PendingConfirm::ClearHistory);
             cx.notify();
         }
     }
 
-    pub fn confirm_delete_environment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((env_id, _)) = self.pending_delete_env.take() {
-            self.delete_environment(&env_id, window, cx);
+    pub fn dismiss_confirm(&mut self, cx: &mut Context<Self>) {
+        if self.pending_confirm.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub fn accept_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.pending_confirm.take() {
+            Some(PendingConfirm::DeleteEnvironment { id, .. }) => {
+                self.delete_environment(&id, window, cx);
+            }
+            Some(PendingConfirm::ClearHistory) => {
+                self.clear_history(cx);
+            }
+            None => {}
         }
     }
 
@@ -1280,7 +1305,14 @@ impl Workspace {
         if let Some(ref env_id) = self.active_env_id {
             let models: Vec<KeyValueRow> =
                 self.env_var_rows.iter().map(|r| r.to_model(cx)).collect();
-            let edited_name = self.env_name_input.read(cx).value().trim().to_string();
+            let edited_name: String = self
+                .env_name_input
+                .read(cx)
+                .value()
+                .trim()
+                .chars()
+                .take(MAX_ENV_NAME_CHARS)
+                .collect();
             if let Some(env) = self.environments.iter_mut().find(|e| &e.id == env_id) {
                 if !edited_name.is_empty() {
                     env.name = edited_name;
@@ -1873,8 +1905,8 @@ impl Workspace {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pending_delete_env.is_some() && ev.keystroke.key == "escape" {
-            self.cancel_delete_environment(cx);
+        if self.pending_confirm.is_some() && ev.keystroke.key == "escape" {
+            self.dismiss_confirm(cx);
             return;
         }
         if self.show_settings_modal && ev.keystroke.key == "escape" {
@@ -2086,12 +2118,19 @@ impl Render for Workspace {
                                         cx.notify();
                                     })),
                             )
-                            .child(
+                            .child({
+                                let top_env_label = truncate_chars(&active_env_name, 18);
+                                let full_env_name = active_env_name.clone();
+                                let show_tip = top_env_label != full_env_name;
                                 Button::new("top-env-picker")
                                     .with_size(Size::XSmall)
                                     .secondary()
                                     .dropdown_caret(true)
-                                    .label(SharedString::from(active_env_name))
+                                    .max_w(px(180.))
+                                    .label(SharedString::from(top_env_label))
+                                    .when(show_tip, |btn| {
+                                        btn.tooltip(SharedString::from(full_env_name))
+                                    })
                                     .dropdown_menu(move |mut menu, _, _| {
                                         let v_none = view.clone();
                                         menu = menu.item(
@@ -2109,7 +2148,7 @@ impl Render for Workspace {
                                             let is_cur =
                                                 active_env_id.as_deref() == Some(eid.as_str());
                                             menu = menu.item(
-                                                PopupMenuItem::new(ename.clone())
+                                                PopupMenuItem::new(truncate_chars(ename, 28))
                                                     .checked(is_cur)
                                                     .on_click(move |_, window, app| {
                                                         v_env.update(app, |this, cx| {
@@ -2147,7 +2186,7 @@ impl Render for Workspace {
                                             let del_name = envs_snapshot
                                                 .iter()
                                                 .find(|(id, _)| id == &del_id)
-                                                .map(|(_, name)| name.clone())
+                                                .map(|(_, name)| truncate_chars(name, 22))
                                                 .unwrap_or_else(|| "Environment".to_string());
                                             let v_del = view.clone();
                                             menu = menu.separator();
@@ -2176,8 +2215,8 @@ impl Render for Workspace {
                                             );
                                         }
                                         menu
-                                    }),
-                            )
+                                    })
+                            })
                             .child(div().w(px(1.)).h(px(16.)).bg(solid(BORDER_SUBTLE)))
                             .child(render_window_controls(window)),
                     ),
@@ -2228,8 +2267,8 @@ impl Render for Workspace {
             .when(self.show_settings_modal, |root| {
                 root.child(render_settings_modal(self, window, cx))
             })
-            .when_some(self.pending_delete_env.clone(), |root, (_, env_name)| {
-                root.child(render_confirm_delete_env_modal(&env_name, cx))
+            .when_some(self.pending_confirm.as_ref(), |root, action| {
+                root.child(render_confirm_modal(action, cx))
             })
     }
 }

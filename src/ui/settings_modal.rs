@@ -60,6 +60,39 @@ impl SettingsCategory {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingConfirm {
+    DeleteEnvironment { id: String, name: String },
+    ClearHistory,
+}
+
+impl PendingConfirm {
+    pub fn title(&self) -> &'static str {
+        match self {
+            Self::DeleteEnvironment { .. } => "Delete Environment",
+            Self::ClearHistory => "Clear History",
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            Self::DeleteEnvironment { name, .. } => format!(
+                "Are you sure you want to delete \"{name}\"? All variables stored in this environment will be permanently removed."
+            ),
+            Self::ClearHistory => {
+                "Are you sure you want to clear all request history? Unsaved requests in your history cannot be recovered.".to_string()
+            }
+        }
+    }
+
+    pub fn confirm_label(&self) -> &'static str {
+        match self {
+            Self::DeleteEnvironment { .. } => "Delete",
+            Self::ClearHistory => "Clear History",
+        }
+    }
+}
+
 fn modal_backdrop(id: &'static str) -> gpui_kit::Stateful<gpui_kit::Div> {
     div()
         .id(id)
@@ -69,30 +102,28 @@ fn modal_backdrop(id: &'static str) -> gpui_kit::Stateful<gpui_kit::Div> {
         .occlude()
 }
 
-pub fn render_confirm_delete_env_modal(
-    env_name: &str,
+pub fn render_confirm_modal(
+    action: &PendingConfirm,
     cx: &mut Context<Workspace>,
 ) -> impl IntoElement {
     div()
-        .id("confirm-delete-env-root")
+        .id("confirm-dialog-root")
         .absolute()
         .inset_0()
         .flex()
         .items_center()
         .justify_center()
         .child(
-            modal_backdrop("confirm-delete-env-backdrop").on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.cancel_delete_environment(cx);
-                },
-            )),
+            modal_backdrop("confirm-dialog-backdrop").on_click(cx.listener(|this, _, _, cx| {
+                this.dismiss_confirm(cx);
+            })),
         )
         .child(
             v_flex()
-                .id("confirm-delete-env-card")
+                .id("confirm-dialog-card")
                 .relative()
                 .occlude()
-                .w(px(430.))
+                .w(px(440.))
                 .max_w(relative(0.90))
                 .bg(solid(BG_SURFACE))
                 .border_1()
@@ -114,15 +145,15 @@ pub fn render_confirm_delete_env_modal(
                                 .text_sm()
                                 .font_semibold()
                                 .text_color(solid(TEXT_PRIMARY))
-                                .child("Delete Environment"),
+                                .child(SharedString::from(action.title())),
                         )
                         .child(
-                            Button::new("confirm-delete-env-close")
+                            Button::new("confirm-dialog-close")
                                 .with_size(Size::XSmall)
                                 .ghost()
                                 .icon(IconName::Close)
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.cancel_delete_environment(cx);
+                                    this.dismiss_confirm(cx);
                                 })),
                         ),
                 )
@@ -134,9 +165,7 @@ pub fn render_confirm_delete_env_modal(
                             div()
                                 .text_xs()
                                 .text_color(solid(TEXT_PRIMARY))
-                                .child(SharedString::from(format!(
-                                    "Are you sure you want to delete \"{env_name}\"? All variables stored in this environment will be permanently removed."
-                                ))),
+                                .child(SharedString::from(action.message())),
                         )
                         .child(
                             h_flex()
@@ -144,22 +173,22 @@ pub fn render_confirm_delete_env_modal(
                                 .justify_end()
                                 .gap_2()
                                 .child(
-                                    Button::new("confirm-delete-env-cancel")
+                                    Button::new("confirm-dialog-cancel")
                                         .with_size(Size::Small)
                                         .secondary()
                                         .label("Cancel")
                                         .on_click(cx.listener(|this, _, _, cx| {
-                                            this.cancel_delete_environment(cx);
+                                            this.dismiss_confirm(cx);
                                         })),
                                 )
                                 .child(
-                                    Button::new("confirm-delete-env-accept")
+                                    Button::new("confirm-dialog-accept")
                                         .with_size(Size::Small)
                                         .danger()
                                         .icon(IconName::Delete)
-                                        .label("Delete")
+                                        .label(SharedString::from(action.confirm_label()))
                                         .on_click(cx.listener(|this, _, window, cx| {
-                                            this.confirm_delete_environment(window, cx);
+                                            this.accept_confirm(window, cx);
                                         })),
                                 ),
                         ),

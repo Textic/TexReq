@@ -20,8 +20,25 @@ impl Environment {
     }
 }
 
+pub const MAX_ENV_NAME_CHARS: usize = 32;
+
 pub fn default_environments() -> Vec<Environment> {
     Vec::new()
+}
+
+/// Truncates `text` cleanly at a UTF-8 character boundary, appending `...` when shortened.
+pub fn truncate_chars(text: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    if max_chars <= 3 {
+        return text.chars().take(max_chars).collect();
+    }
+    let prefix: String = text.chars().take(max_chars - 3).collect();
+    format!("{prefix}...")
 }
 
 /// Picks the next sequential `Environment <N>` name based on the current count,
@@ -108,5 +125,12 @@ EMPTY=
 
         let with_gap = vec![Environment::new("Environment 2", vec![])];
         assert_eq!(next_environment_name(&with_gap), "Environment 3");
+    }
+
+    #[test]
+    fn truncates_long_labels_safely() {
+        assert_eq!(truncate_chars("Short", 18), "Short");
+        assert_eq!(truncate_chars("ProductionUSWestCluster", 12), "Productio...");
+        assert_eq!(truncate_chars("Exact10Chr", 10), "Exact10Chr");
     }
 }

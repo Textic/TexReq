@@ -450,7 +450,7 @@ fn render_history_list(
                         .icon(IconName::Delete)
                         .label("Clear")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.clear_history(cx);
+                            this.request_clear_history(cx);
                         })),
                 ),
             )

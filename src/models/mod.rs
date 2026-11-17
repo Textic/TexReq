@@ -6,7 +6,10 @@ pub mod settings;
 pub mod websocket;
 
 pub use collection::{CollectionFolder, HistoryEntry, default_collections};
-pub use environment::{Environment, default_environments, next_environment_name, parse_dotenv};
+pub use environment::{
+    Environment, MAX_ENV_NAME_CHARS, default_environments, next_environment_name, parse_dotenv,
+    truncate_chars,
+};
 pub use request::{
     AuthConfig, BodyKind, CaptureRule, HttpMethod, KeyValueRow, NetworkOptions, RequestItem,
     RequestKind,
