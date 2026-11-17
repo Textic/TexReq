@@ -1176,13 +1176,39 @@ impl Workspace {
         self.env_counter += 1;
         let env = Environment::new(
             format!("Environment {}", self.env_counter),
-            vec![KeyValueRow::new("base_url", "http://127.0.0.1:8000")],
+            Vec::new(),
         );
         let new_id = env.id.clone();
         self.environments.push(env);
         self.store.save_environments(&self.environments);
         self.select_environment(Some(new_id), window, cx);
         self.active_drawer = Some(RightDrawerTab::Variables);
+        cx.notify();
+    }
+
+    pub fn delete_active_environment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.active_env_id.clone() {
+            self.delete_environment(&id, window, cx);
+        }
+    }
+
+    pub fn delete_environment(
+        &mut self,
+        env_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let before = self.environments.len();
+        self.environments.retain(|e| e.id != env_id);
+        if self.environments.len() == before {
+            return;
+        }
+        self.store.save_environments(&self.environments);
+        if self.active_env_id.as_deref() == Some(env_id) {
+            self.active_env_id = None;
+            self.env_var_rows.clear();
+            self.refresh_snippet_editor(window, cx);
+        }
         cx.notify();
     }
 
@@ -1844,7 +1870,7 @@ impl Render for Workspace {
                 // Integrated Frameless Top Bar: Tabs + Drag Spacer + Toolbar + Min/Max/Close
                 h_flex()
                     .w_full()
-                    .h(px(38.))
+                    .h(px(40.))
                     .pl_2()
                     .gap_2()
                     .items_center()
@@ -1896,7 +1922,7 @@ impl Render for Workspace {
 
                                 h_flex()
                                     .id(("open-tab", ix))
-                                    .h(px(28.))
+                                    .h(px(30.))
                                     .px_2()
                                     .gap_1p5()
                                     .flex_shrink_0()
@@ -2047,7 +2073,7 @@ impl Render for Workspace {
                                             ),
                                         );
                                         let v_dot = view.clone();
-                                        menu.item(
+                                        menu = menu.item(
                                             PopupMenuItem::new("Import .env...").on_click(
                                                 move |_, window, app| {
                                                     v_dot.update(app, |this, cx| {
@@ -2055,7 +2081,29 @@ impl Render for Workspace {
                                                     });
                                                 },
                                             ),
-                                        )
+                                        );
+                                        if let Some(del_id) = active_env_id.clone() {
+                                            let del_name = envs_snapshot
+                                                .iter()
+                                                .find(|(id, _)| id == &del_id)
+                                                .map(|(_, name)| name.clone())
+                                                .unwrap_or_else(|| "Environment".to_string());
+                                            let v_del = view.clone();
+                                            menu = menu.separator();
+                                            menu = menu.item(
+                                                PopupMenuItem::new(format!(
+                                                    "Delete \"{del_name}\""
+                                                ))
+                                                .on_click(move |_, window, app| {
+                                                    v_del.update(app, |this, cx| {
+                                                        this.delete_environment(
+                                                            &del_id, window, cx,
+                                                        );
+                                                    });
+                                                }),
+                                            );
+                                        }
+                                        menu
                                     }),
                             )
                             .child(div().w(px(1.)).h(px(16.)).bg(solid(BORDER_SUBTLE)))

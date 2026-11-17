@@ -41,7 +41,7 @@ pub fn render_sidebar(
             // Seamless sidebar header with circular app mark (drag handle on brand text)
             h_flex()
                 .w_full()
-                .h(px(38.))
+                .h(px(40.))
                 .px_3()
                 .items_center()
                 .justify_between()
@@ -380,7 +380,7 @@ fn render_collections_list(
                                         }))
                                         .child(
                                             div()
-                                                .w(px(38.))
+                                                .w(px(46.))
                                                 .flex_shrink_0()
                                                 .text_xs()
                                                 .font_bold()

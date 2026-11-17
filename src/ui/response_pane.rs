@@ -454,7 +454,7 @@ fn render_realtime_stream_pane(
                                     .appearance(false),
                             )
                             .w(px(200.))
-                            .h(px(24.))
+                            .h(px(28.))
                             .px_2()
                             .bg(solid(BG_ELEVATED))
                             .border_1()

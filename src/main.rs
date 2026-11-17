@@ -68,6 +68,7 @@ fn main() {
         };
 
         gpui_kit::open_window(options, cx, |window, cx| {
+            window.set_rem_size(px(theme::UI_REM_SIZE));
             cx.new(|cx| Workspace::new(window, cx))
         })
         .expect("failed to open TexReq window");

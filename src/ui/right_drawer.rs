@@ -34,7 +34,7 @@ pub fn render_right_rail_and_drawer(
         .when_some(active, |this, tab| {
             this.child(
                 v_flex()
-                    .w(px(340.))
+                    .w(px(360.))
                     .h_full()
                     .bg(solid(BG_SURFACE))
                     .border_l_1()
@@ -164,16 +164,6 @@ fn render_snippets_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl I
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.copy_snippet(cx);
                                 })),
-                        )
-                        .child(
-                            Button::new("snip-close")
-                                .with_size(Size::XSmall)
-                                .ghost()
-                                .icon(IconName::Close)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.active_drawer = None;
-                                    cx.notify();
-                                })),
                         ),
                 ),
         )
@@ -243,25 +233,27 @@ fn render_variables_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl 
                                     this.import_dotenv_dialog(window, cx);
                                 })),
                         )
-                        .child(
-                            Button::new("vars-save")
-                                .with_size(Size::XSmall)
-                                .primary()
-                                .label("Save")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.save_active_env_vars(cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("vars-close")
-                                .with_size(Size::XSmall)
-                                .ghost()
-                                .icon(IconName::Close)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.active_drawer = None;
-                                    cx.notify();
-                                })),
-                        ),
+                        .when(ws.active_env_id.is_some(), |el| {
+                            el.child(
+                                Button::new("vars-save")
+                                    .with_size(Size::XSmall)
+                                    .primary()
+                                    .label("Save")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.save_active_env_vars(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("vars-delete-env")
+                                    .with_size(Size::XSmall)
+                                    .ghost()
+                                    .icon(IconName::Delete)
+                                    .tooltip("Delete this environment")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.delete_active_environment(window, cx);
+                                    })),
+                            )
+                        }),
                 ),
         )
         .child(
@@ -331,16 +323,6 @@ fn render_network_info_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> im
                         .font_semibold()
                         .text_color(solid(TEXT_PRIMARY))
                         .child("Network / TLS Inspector"),
-                )
-                .child(
-                    Button::new("netinfo-close")
-                        .with_size(Size::XSmall)
-                        .ghost()
-                        .icon(IconName::Close)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.active_drawer = None;
-                            cx.notify();
-                        })),
                 ),
         )
         .child(

@@ -2,7 +2,7 @@ use gpui_kit::{
     Context, SharedString, Window,
     component::{
         Disableable as _, IconName, Sizable as _, Size, StyledExt as _,
-        button::{Button, ButtonVariants as _},
+        button::{Button, ButtonRounded, ButtonVariants as _},
         checkbox::Checkbox,
         h_flex,
         input::{Editor, Input},
@@ -56,7 +56,7 @@ pub fn render_request_pane(
             // Lightweight borderless title + Save button
             h_flex()
                 .w_full()
-                .h(px(26.))
+                .h(px(28.))
                 .items_center()
                 .justify_between()
                 .gap_2()
@@ -90,14 +90,14 @@ pub fn render_request_pane(
             // Clean unified Request URL bar (subtle 6px rectangle, no circles)
             h_flex()
                 .w_full()
-                .h(px(38.))
-                .px_1p5()
-                .gap_1p5()
+                .h(px(40.))
+                .pl_1p5()
                 .items_center()
                 .bg(solid(BG_ELEVATED))
                 .border_1()
                 .border_color(solid(BORDER))
                 .rounded(px(RADIUS_ROW))
+                .overflow_hidden()
                 .child(
                     // Method / Protocol Dropdown
                     div()
@@ -109,7 +109,7 @@ pub fn render_request_pane(
                                 .dropdown_caret(true)
                                 .child(
                                     div()
-                                        .w(px(52.))
+                                        .w(px(62.))
                                         .text_xs()
                                         .font_bold()
                                         .text_color(solid(method_hex))
@@ -165,7 +165,7 @@ pub fn render_request_pane(
                                 }),
                         ),
                 )
-                .child(div().w(px(1.)).h(px(18.)).flex_shrink_0().bg(solid(BORDER)))
+                .child(div().w(px(1.)).h(px(18.)).mx_1p5().flex_shrink_0().bg(solid(BORDER)))
                 .child(
                     full_hit_input(
                         "req-url-input-slot",
@@ -177,7 +177,7 @@ pub fn render_request_pane(
                     .flex_1()
                     .min_w_0(),
                 )
-                .child(if is_realtime {
+                .child(url_bar_action_button(if is_realtime {
                     match stream_status {
                         StreamStatus::Disconnected => Button::new("req-stream-connect")
                             .with_size(Size::Small)
@@ -223,7 +223,7 @@ pub fn render_request_pane(
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.trigger_primary_action(window, cx);
                         }))
-                }),
+                })),
         )
         .child(
             // Sub-tabs bar
@@ -884,4 +884,15 @@ fn render_network_panel(ws: &Workspace, cx: &mut Context<Workspace>) -> impl Int
                         })),
                 ),
         )
+}
+
+/// Styles the right-most action button inside the unified URL bar so it sits
+/// flush against the top, right, and bottom inner edges of the outer border.
+fn url_bar_action_button(btn: Button) -> Button {
+    btn.h_full()
+        .px_4()
+        .flex_shrink_0()
+        .rounded(ButtonRounded::None)
+        .rounded_tr(px(RADIUS_ROW - 1.))
+        .rounded_br(px(RADIUS_ROW - 1.))
 }

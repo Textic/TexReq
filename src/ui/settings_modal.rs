@@ -92,8 +92,8 @@ pub fn render_settings_modal(
                 .id("settings-modal-card")
                 .relative()
                 .occlude()
-                .w(px(790.))
-                .h(px(550.))
+                .w(px(820.))
+                .h(px(570.))
                 .max_w(relative(0.92))
                 .max_h(relative(0.90))
                 .bg(solid(BG_SURFACE))
@@ -209,7 +209,7 @@ fn render_category_rail(
     cx: &mut Context<Workspace>,
 ) -> impl IntoElement {
     v_flex()
-        .w(px(184.))
+        .w(px(196.))
         .h_full()
         .flex_shrink_0()
         .p_2p5()

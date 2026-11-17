@@ -41,6 +41,7 @@ pub const COLOR_GRAPHQL: u32 = 0xec4899;
 
 pub const RADIUS_ROW: f32 = 6.;
 pub const RADIUS_CONTROL: f32 = 4.;
+pub const UI_REM_SIZE: f32 = 18.5;
 
 #[inline]
 pub fn solid(hex: u32) -> Hsla {
@@ -81,7 +82,7 @@ pub fn apply_flat_dark_theme(cx: &mut App) {
         theme.focus_ring = false;
         theme.radius = px(RADIUS_CONTROL);
         theme.radius_lg = px(RADIUS_ROW);
-        theme.font_size = px(13.);
+        theme.font_size = px(15.);
         theme.mono_font_size = px(12.5);
 
         let bg_base = solid(BG_BASE);
