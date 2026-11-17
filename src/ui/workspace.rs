@@ -34,9 +34,9 @@ use crate::net::snippets::{SnippetLang, generate_snippet};
 use crate::net::ws_client::{WsCommand, run_ws_session};
 use crate::storage::{LocalStore, git};
 use crate::theme::{
-    ACCENT_BLUE, BG_BASE, BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER, BORDER_SUBTLE, COLOR_DELETE,
-    RADIUS_CIRCLE, RADIUS_CONTROL, TEXT_MUTED, TEXT_PRIMARY, badge_info,
-    crisp_resize_handle_appearance, solid,
+    BG_BASE, BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER, BORDER_SUBTLE, COLOR_DELETE,
+    RADIUS_CONTROL, TEXT_MUTED, TEXT_PRIMARY, badge_info, crisp_resize_handle_appearance,
+    render_app_badge, solid,
 };
 use crate::ui::kv_editor::{KvTarget, UiCaptureRow, UiKvRow};
 use crate::ui::request_pane::render_request_pane;
@@ -1643,21 +1643,7 @@ impl Render for Workspace {
                     .border_b_1()
                     .border_color(solid(BORDER_SUBTLE))
                     .when(!show_sidebar, |bar| {
-                        bar.child(
-                            div()
-                                .w(px(18.))
-                                .h(px(18.))
-                                .flex_shrink_0()
-                                .rounded(px(RADIUS_CIRCLE))
-                                .bg(solid(ACCENT_BLUE))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_xs()
-                                .font_bold()
-                                .text_color(solid(0xffffff))
-                                .child("T"),
-                        )
+                        bar.child(render_app_badge(22.))
                     })
                     .child(
                         Button::new("top-toggle-sb")

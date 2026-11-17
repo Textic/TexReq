@@ -6,6 +6,8 @@ mod storage;
 mod theme;
 mod ui;
 
+use std::borrow::Cow;
+
 use gpui_kit::{assets::Assets, *};
 
 use crate::ui::workspace::{
@@ -13,8 +15,23 @@ use crate::ui::workspace::{
     Workspace,
 };
 
+struct TexReqAssets;
+
+impl AssetSource for TexReqAssets {
+    fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
+        if path == "icons/texreq.png" {
+            return Ok(Some(Cow::Borrowed(include_bytes!("../assets/texreq.png"))));
+        }
+        Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
+        Assets.list(path)
+    }
+}
+
 fn main() {
-    gpui_kit::application().with_assets(Assets).run(|cx| {
+    gpui_kit::application().with_assets(TexReqAssets).run(|cx| {
         gpui_kit::init(cx);
         theme::apply_flat_dark_theme(cx);
 

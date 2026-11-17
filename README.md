@@ -1,3 +1,7 @@
+<p align="left">
+  <img src="assets/texreq.svg" width="56" height="56" alt="TexReq Icon" />
+</p>
+
 # TexReq
 
 A fast, lightweight native desktop API client built with **Rust** and **GPUI-Kit**.

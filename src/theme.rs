@@ -4,7 +4,7 @@ use gpui_kit::{
     App, Axis, Hsla,
     base::{ResizeHandleContext, ResizeHandleRenderer, ResizeHandleState},
     component::{Theme, ThemeMode},
-    div,
+    div, img,
     prelude::*,
     px, rgb,
 };
@@ -38,7 +38,6 @@ pub const COLOR_GRAPHQL: u32 = 0xec4899;
 
 pub const RADIUS_ROW: f32 = 6.;
 pub const RADIUS_CONTROL: f32 = 4.;
-pub const RADIUS_CIRCLE: f32 = 999.;
 
 #[inline]
 pub fn solid(hex: u32) -> Hsla {
@@ -261,4 +260,12 @@ pub fn status_color(status: u16) -> u32 {
         500..=599 => COLOR_DELETE,
         _ => TEXT_MUTED,
     }
+}
+
+/// Renders the TexReq circular application emblem from embedded PNG assets.
+pub fn render_app_badge(size_px: f32) -> impl IntoElement {
+    img("icons/texreq.png")
+        .w(px(size_px))
+        .h(px(size_px))
+        .flex_shrink_0()
 }

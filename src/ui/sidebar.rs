@@ -14,8 +14,8 @@ use gpui_kit::{
 };
 
 use crate::theme::{
-    ACCENT_BLUE, BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER_SUBTLE, COLOR_DELETE, RADIUS_CIRCLE,
-    RADIUS_CONTROL, RADIUS_ROW, TEXT_MUTED, TEXT_PRIMARY, badge_info, solid, status_color,
+    BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER_SUBTLE, COLOR_DELETE, RADIUS_CONTROL, RADIUS_ROW,
+    TEXT_MUTED, TEXT_PRIMARY, badge_info, render_app_badge, solid, status_color,
 };
 use crate::ui::workspace::{RightDrawerTab, SidebarMode, Workspace};
 
@@ -51,21 +51,7 @@ pub fn render_sidebar(
                         .gap_2()
                         .items_center()
                         .window_control_area(WindowControlArea::Drag)
-                        .child(
-                            div()
-                                .w(px(18.))
-                                .h(px(18.))
-                                .flex_shrink_0()
-                                .rounded(px(RADIUS_CIRCLE))
-                                .bg(solid(ACCENT_BLUE))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_xs()
-                                .font_bold()
-                                .text_color(solid(0xffffff))
-                                .child("T"),
-                        )
+                        .child(render_app_badge(22.))
                         .child(
                             div()
                                 .text_sm()
