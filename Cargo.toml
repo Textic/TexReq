@@ -1,0 +1,45 @@
+[package]
+name = "texreq"
+version = "0.1.0"
+edition = "2024"
+description = "Minimalist, local-first GPU API client with zero gradients built with GPUI-Kit"
+
+[dependencies]
+gpui-kit = { version = "0.10.0", features = [
+    "tree-sitter-javascript",
+    "tree-sitter-graphql",
+    "tree-sitter-html",
+    "tree-sitter-bash",
+    "tree-sitter-yaml",
+] }
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util", "fs"] }
+reqwest = { version = "0.13", default-features = false, features = [
+    "native-tls",
+    "charset",
+    "http2",
+    "system-proxy",
+    "cookies",
+    "json",
+    "form",
+    "multipart",
+    "query",
+    "stream",
+    "gzip",
+    "brotli",
+    "deflate",
+] }
+tokio-tungstenite = { version = "0.30", features = ["native-tls", "url"] }
+native-tls = "0.2"
+futures-util = { version = "0.3", features = ["sink"] }
+futures-channel = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.0"
+url = "2.5"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6.0"
+rfd = "0.18"
+anyhow = "1.0"
+base64 = "0.22"
+mime_guess = "2.0"
