@@ -91,7 +91,6 @@ pub fn render_request_pane(
             h_flex()
                 .w_full()
                 .h(px(40.))
-                .pl_1p5()
                 .items_center()
                 .bg(solid(BG_ELEVATED))
                 .border_1()
@@ -101,11 +100,17 @@ pub fn render_request_pane(
                 .child(
                     // Method / Protocol Dropdown
                     div()
+                        .h_full()
                         .flex_shrink_0()
                         .child(
                             Button::new("req-method-dropdown")
                                 .with_size(Size::Small)
                                 .ghost()
+                                .h(px(38.))
+                                .px_3()
+                                .rounded(ButtonRounded::None)
+                                .rounded_tl(px(RADIUS_ROW - 1.))
+                                .rounded_bl(px(RADIUS_ROW - 1.))
                                 .dropdown_caret(true)
                                 .child(
                                     div()
@@ -165,7 +170,7 @@ pub fn render_request_pane(
                                 }),
                         ),
                 )
-                .child(div().w(px(1.)).h(px(18.)).mx_1p5().flex_shrink_0().bg(solid(BORDER)))
+                .child(div().w(px(1.)).h(px(20.)).flex_shrink_0().bg(solid(BORDER)))
                 .child(
                     full_hit_input(
                         "req-url-input-slot",
