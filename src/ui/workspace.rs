@@ -47,7 +47,9 @@ use crate::ui::kv_editor::{KvTarget, UiCaptureRow, UiKvRow};
 use crate::ui::request_pane::render_request_pane;
 use crate::ui::response_pane::render_response_pane;
 use crate::ui::right_drawer::render_right_rail_and_drawer;
-use crate::ui::settings_modal::{SettingsCategory, render_settings_modal};
+use crate::ui::settings_modal::{
+    SettingsCategory, render_confirm_delete_env_modal, render_settings_modal,
+};
 use crate::ui::sidebar::render_sidebar;
 use crate::ui::tab_session::{BodyKindUi, RequestSubTab, ResponseSubTab, TabSession, should_autoparse_curl};
 
@@ -106,6 +108,9 @@ pub struct Workspace {
     pub git_commit_msg_input: Entity<gpui_kit::component::input::InputState>,
     pub update_state: UpdateState,
     pub folder_counter: usize,
+    pub env_name_input: Entity<gpui_kit::component::input::InputState>,
+    pub pending_delete_env: Option<(String, String)>,
+    _env_name_sub: gpui_kit::Subscription,
     pub show_settings_modal: bool,
     pub settings_category: SettingsCategory,
     pub mcp_command_path: String,
@@ -159,6 +164,35 @@ impl Workspace {
             gpui_kit::component::input::InputState::new(window, cx)
                 .placeholder("Commit message (optional)")
         });
+        let env_name_input = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("Environment name")
+        });
+        let _env_name_sub = cx.subscribe_in(
+            &env_name_input,
+            window,
+            |this, state, ev: &gpui_kit::component::input::InputEvent, _, cx| {
+                match ev {
+                    gpui_kit::component::input::InputEvent::Change => {
+                        let next_name = state.read(cx).value().trim().to_string();
+                        if !next_name.is_empty()
+                            && let Some(ref env_id) = this.active_env_id
+                            && let Some(env) = this.environments.iter_mut().find(|e| &e.id == env_id)
+                            && env.name != next_name
+                        {
+                            env.name = next_name;
+                            cx.notify();
+                        }
+                    }
+                    gpui_kit::component::input::InputEvent::PressEnter { .. }
+                    | gpui_kit::component::input::InputEvent::Blur => {
+                        this.save_active_env_vars_silent(cx);
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+            },
+        );
         let snippet_viewer = cx.new(|cx| {
             gpui_kit::component::input::EditorState::new(window, cx)
                 .language("bash")
@@ -204,6 +238,9 @@ impl Workspace {
             git_commit_msg_input,
             update_state: UpdateState::Idle,
             folder_counter,
+            env_name_input,
+            pending_delete_env: None,
+            _env_name_sub,
             show_settings_modal: false,
             settings_category: SettingsCategory::General,
             mcp_command_path,
@@ -1145,14 +1182,15 @@ impl Workspace {
         let _ = names;
     }
 
-    pub fn select_environment(
-        &mut self,
-        env_id: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.save_active_env_vars_silent(cx);
-        self.active_env_id = env_id;
+    fn sync_active_env_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected_name = self
+            .active_env_id
+            .as_ref()
+            .and_then(|id| self.environments.iter().find(|e| &e.id == id))
+            .map(|e| e.name.clone())
+            .unwrap_or_default();
+        self.env_name_input
+            .update(cx, |s, cx| s.set_value(selected_name, window, cx));
         self.env_var_rows = self
             .active_env_id
             .as_ref()
@@ -1165,6 +1203,17 @@ impl Workspace {
             })
             .unwrap_or_default();
         self.refresh_snippet_editor(window, cx);
+    }
+
+    pub fn select_environment(
+        &mut self,
+        env_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_active_env_vars_silent(cx);
+        self.active_env_id = env_id;
+        self.sync_active_env_inputs(window, cx);
         cx.notify();
     }
 
@@ -1180,9 +1229,28 @@ impl Workspace {
         cx.notify();
     }
 
-    pub fn delete_active_environment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn request_delete_active_environment(&mut self, cx: &mut Context<Self>) {
         if let Some(id) = self.active_env_id.clone() {
-            self.delete_environment(&id, window, cx);
+            self.request_delete_environment(&id, cx);
+        }
+    }
+
+    pub fn request_delete_environment(&mut self, env_id: &str, cx: &mut Context<Self>) {
+        if let Some(env) = self.environments.iter().find(|e| e.id == env_id) {
+            self.pending_delete_env = Some((env.id.clone(), env.name.clone()));
+            cx.notify();
+        }
+    }
+
+    pub fn cancel_delete_environment(&mut self, cx: &mut Context<Self>) {
+        if self.pending_delete_env.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub fn confirm_delete_environment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((env_id, _)) = self.pending_delete_env.take() {
+            self.delete_environment(&env_id, window, cx);
         }
     }
 
@@ -1201,6 +1269,8 @@ impl Workspace {
         if self.active_env_id.as_deref() == Some(env_id) {
             self.active_env_id = None;
             self.env_var_rows.clear();
+            self.env_name_input
+                .update(cx, |s, cx| s.set_value("", window, cx));
             self.refresh_snippet_editor(window, cx);
         }
         cx.notify();
@@ -1210,7 +1280,11 @@ impl Workspace {
         if let Some(ref env_id) = self.active_env_id {
             let models: Vec<KeyValueRow> =
                 self.env_var_rows.iter().map(|r| r.to_model(cx)).collect();
+            let edited_name = self.env_name_input.read(cx).value().trim().to_string();
             if let Some(env) = self.environments.iter_mut().find(|e| &e.id == env_id) {
+                if !edited_name.is_empty() {
+                    env.name = edited_name;
+                }
                 env.variables = models;
             }
             self.store.save_environments(&self.environments);
@@ -1561,18 +1635,7 @@ impl Workspace {
             self.store.save_environments(&self.environments);
         }
 
-        self.env_var_rows = self
-            .active_env_id
-            .as_ref()
-            .and_then(|id| self.environments.iter().find(|e| &e.id == id))
-            .map(|env| {
-                env.variables
-                    .iter()
-                    .map(|r| UiKvRow::from_model(r, window, cx))
-                    .collect()
-            })
-            .unwrap_or_default();
-        self.refresh_snippet_editor(window, cx);
+        self.sync_active_env_inputs(window, cx);
     }
 
     pub fn refresh_git_status(&mut self, cx: &mut Context<Self>) {
@@ -1810,6 +1873,10 @@ impl Workspace {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_delete_env.is_some() && ev.keystroke.key == "escape" {
+            self.cancel_delete_environment(cx);
+            return;
+        }
         if self.show_settings_modal && ev.keystroke.key == "escape" {
             self.close_settings(cx);
             return;
@@ -2099,10 +2166,10 @@ impl Render for Workspace {
                                                             "Delete \"{del_name}\""
                                                         )))
                                                 })
-                                                .on_click(move |_, window, app| {
+                                                .on_click(move |_, _, app| {
                                                     v_del.update(app, |this, cx| {
-                                                        this.delete_environment(
-                                                            &del_id, window, cx,
+                                                        this.request_delete_environment(
+                                                            &del_id, cx,
                                                         );
                                                     });
                                                 }),
@@ -2160,6 +2227,9 @@ impl Render for Workspace {
             .child(main_area)
             .when(self.show_settings_modal, |root| {
                 root.child(render_settings_modal(self, window, cx))
+            })
+            .when_some(self.pending_delete_env.clone(), |root, (_, env_name)| {
+                root.child(render_confirm_delete_env_modal(&env_name, cx))
             })
     }
 }

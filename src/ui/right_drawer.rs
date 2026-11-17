@@ -4,7 +4,7 @@ use gpui_kit::{
         IconName, Sizable as _, Size, StyledExt as _,
         button::{Button, ButtonVariants as _},
         h_flex,
-        input::Editor,
+        input::{Editor, Input},
         scroll::ScrollableElement as _,
         v_flex,
     },
@@ -255,13 +255,27 @@ fn render_variables_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl 
                                     .icon(IconName::Delete)
                                     .label("Delete")
                                     .tooltip("Delete this environment")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.delete_active_environment(window, cx);
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.request_delete_active_environment(cx);
                                     })),
                             )
                         }),
                 ),
         )
+        .when(ws.active_env_id.is_some(), |el| {
+            el.child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_medium()
+                            .text_color(solid(TEXT_MUTED))
+                            .child("Environment Name"),
+                    )
+                    .child(Input::new(&ws.env_name_input).with_size(Size::XSmall)),
+            )
+        })
         .child(
             div()
                 .text_xs()

@@ -60,6 +60,113 @@ impl SettingsCategory {
     }
 }
 
+fn modal_backdrop(id: &'static str) -> gpui_kit::Stateful<gpui_kit::Div> {
+    div()
+        .id(id)
+        .absolute()
+        .inset_0()
+        .bg(hsla(0., 0., 0., 0.62))
+        .occlude()
+}
+
+pub fn render_confirm_delete_env_modal(
+    env_name: &str,
+    cx: &mut Context<Workspace>,
+) -> impl IntoElement {
+    div()
+        .id("confirm-delete-env-root")
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            modal_backdrop("confirm-delete-env-backdrop").on_click(cx.listener(
+                |this, _, _, cx| {
+                    this.cancel_delete_environment(cx);
+                },
+            )),
+        )
+        .child(
+            v_flex()
+                .id("confirm-delete-env-card")
+                .relative()
+                .occlude()
+                .w(px(430.))
+                .max_w(relative(0.90))
+                .bg(solid(BG_SURFACE))
+                .border_1()
+                .border_color(solid(BORDER))
+                .rounded(px(RADIUS_ROW))
+                .overflow_hidden()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .h(px(42.))
+                        .px_4()
+                        .items_center()
+                        .justify_between()
+                        .bg(solid(BG_BASE))
+                        .border_b_1()
+                        .border_color(solid(BORDER_SUBTLE))
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_semibold()
+                                .text_color(solid(TEXT_PRIMARY))
+                                .child("Delete Environment"),
+                        )
+                        .child(
+                            Button::new("confirm-delete-env-close")
+                                .with_size(Size::XSmall)
+                                .ghost()
+                                .icon(IconName::Close)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.cancel_delete_environment(cx);
+                                })),
+                        ),
+                )
+                .child(
+                    v_flex()
+                        .p_4()
+                        .gap_4()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(solid(TEXT_PRIMARY))
+                                .child(SharedString::from(format!(
+                                    "Are you sure you want to delete \"{env_name}\"? All variables stored in this environment will be permanently removed."
+                                ))),
+                        )
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    Button::new("confirm-delete-env-cancel")
+                                        .with_size(Size::Small)
+                                        .secondary()
+                                        .label("Cancel")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.cancel_delete_environment(cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("confirm-delete-env-accept")
+                                        .with_size(Size::Small)
+                                        .danger()
+                                        .icon(IconName::Delete)
+                                        .label("Delete")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.confirm_delete_environment(window, cx);
+                                        })),
+                                ),
+                        ),
+                ),
+        )
+}
+
 pub fn render_settings_modal(
     ws: &Workspace,
     _window: &mut Window,
@@ -77,15 +184,9 @@ pub fn render_settings_modal(
         .justify_center()
         .child(
             // Dimmed backdrop layer; clicking anywhere outside the centered dialog closes Settings.
-            div()
-                .id("settings-modal-backdrop")
-                .absolute()
-                .inset_0()
-                .bg(hsla(0., 0., 0., 0.62))
-                .occlude()
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.close_settings(cx);
-                })),
+            modal_backdrop("settings-modal-backdrop").on_click(cx.listener(|this, _, _, cx| {
+                this.close_settings(cx);
+            })),
         )
         .child(
             v_flex()
