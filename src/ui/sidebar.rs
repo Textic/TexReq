@@ -16,7 +16,7 @@ use gpui_kit::{
 use crate::net::updater::UpdateState;
 use crate::theme::{
     BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER_SUBTLE, COLOR_DELETE, RADIUS_CONTROL, RADIUS_ROW,
-    TEXT_MUTED, TEXT_PRIMARY, badge_info, render_app_badge, solid, status_color,
+    TEXT_MUTED, TEXT_PRIMARY, badge_info, full_hit_input, render_app_badge, solid, status_color,
 };
 use crate::ui::workspace::{SidebarMode, Workspace};
 
@@ -128,12 +128,16 @@ pub fn render_sidebar(
                                 .text_color(solid(TEXT_MUTED)),
                         )
                         .child(
-                            div().flex_1().min_w_0().child(
+                            full_hit_input(
+                                "sb-search-input-slot",
+                                &ws.search_input,
                                 Input::new(&ws.search_input)
                                     .with_size(Size::XSmall)
                                     .appearance(false)
                                     .cleanable(true),
-                            ),
+                            )
+                            .flex_1()
+                            .min_w_0(),
                         ),
                 )
                 .child(

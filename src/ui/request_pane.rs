@@ -19,7 +19,7 @@ use gpui_kit::{
 use crate::models::{HttpMethod, RequestKind, StreamStatus};
 use crate::theme::{
     BG_BASE, BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER, BORDER_SUBTLE, RADIUS_CONTROL, RADIUS_ROW,
-    TEXT_MUTED, TEXT_PRIMARY, badge_info, crisp_resize_handle_appearance, solid,
+    TEXT_MUTED, TEXT_PRIMARY, badge_info, crisp_resize_handle_appearance, full_hit_input, solid,
 };
 use crate::ui::kv_editor::{KvTarget, render_capture_table, render_flat_subtab, render_kv_table};
 use crate::ui::tab_session::{AuthKindUi, BodyKindUi, RequestSubTab};
@@ -56,21 +56,23 @@ pub fn render_request_pane(
             // Lightweight borderless title + Save button
             h_flex()
                 .w_full()
+                .h(px(26.))
                 .items_center()
                 .justify_between()
                 .gap_2()
                 .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .px_1()
-                        .rounded(px(RADIUS_CONTROL))
-                        .hover(|s| s.bg(solid(BG_SURFACE)))
-                        .child(
-                            Input::new(&tab.name_input)
-                                .with_size(Size::XSmall)
-                                .appearance(false),
-                        ),
+                    full_hit_input(
+                        "req-name-input-slot",
+                        &tab.name_input,
+                        Input::new(&tab.name_input)
+                            .with_size(Size::XSmall)
+                            .appearance(false),
+                    )
+                    .flex_1()
+                    .min_w_0()
+                    .px_1()
+                    .rounded(px(RADIUS_CONTROL))
+                    .hover(|s| s.bg(solid(BG_SURFACE))),
                 )
                 .child(
                     Button::new("req-save-btn")
@@ -165,11 +167,15 @@ pub fn render_request_pane(
                 )
                 .child(div().w(px(1.)).h(px(18.)).flex_shrink_0().bg(solid(BORDER)))
                 .child(
-                    div().flex_1().min_w_0().child(
+                    full_hit_input(
+                        "req-url-input-slot",
+                        &tab.url_input,
                         Input::new(&tab.url_input)
                             .with_size(Size::Small)
                             .appearance(false),
-                    ),
+                    )
+                    .flex_1()
+                    .min_w_0(),
                 )
                 .child(if is_realtime {
                     match stream_status {

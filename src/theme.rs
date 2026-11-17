@@ -1,9 +1,12 @@
 use std::rc::Rc;
 
 use gpui_kit::{
-    App, Axis, Hsla,
+    App, Axis, ElementId, Entity, Hsla, MouseButton,
     base::{ResizeHandleContext, ResizeHandleRenderer, ResizeHandleState},
-    component::{Theme, ThemeMode},
+    component::{
+        Theme, ThemeMode,
+        input::{Input, InputState},
+    },
     div, img,
     prelude::*,
     px, rgb,
@@ -268,4 +271,27 @@ pub fn render_app_badge(size_px: f32) -> impl IntoElement {
         .w(px(size_px))
         .h(px(size_px))
         .flex_shrink_0()
+}
+
+/// Wraps a borderless single-line `Input` so clicks anywhere in its vertical
+/// height (including top/bottom container padding) focus the underlying field.
+pub fn full_hit_input(
+    id: impl Into<ElementId>,
+    state: &Entity<InputState>,
+    input: Input,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let target = state.clone();
+    div()
+        .id(id)
+        .h_full()
+        .flex()
+        .items_center()
+        .cursor_text()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            if !window.default_prevented() {
+                target.update(cx, |s, cx| s.focus(window, cx));
+                window.prevent_default();
+            }
+        })
+        .child(input.h_full().py_0())
 }

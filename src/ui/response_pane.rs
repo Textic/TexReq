@@ -16,8 +16,8 @@ use gpui_kit::{
 use crate::models::{StreamDirection, StreamStatus, format_bytes};
 use crate::theme::{
     ACCENT_BLUE, BG_BASE, BG_ELEVATED, BG_SURFACE, BORDER_SUBTLE, COLOR_DELETE, COLOR_GET,
-    COLOR_POST, COLOR_STREAM, RADIUS_CONTROL, RADIUS_ROW, TEXT_MUTED, TEXT_PRIMARY, solid,
-    status_color,
+    COLOR_POST, COLOR_STREAM, RADIUS_CONTROL, RADIUS_ROW, TEXT_MUTED, TEXT_PRIMARY,
+    full_hit_input, solid, status_color,
 };
 use crate::ui::kv_editor::render_flat_subtab;
 use crate::ui::tab_session::ResponseSubTab;
@@ -446,18 +446,20 @@ fn render_realtime_stream_pane(
                         .gap_1p5()
                         .items_center()
                         .child(
-                            div()
-                                .w(px(200.))
-                                .px_2()
-                                .bg(solid(BG_ELEVATED))
-                                .border_1()
-                                .border_color(solid(BORDER_SUBTLE))
-                                .rounded(px(RADIUS_ROW))
-                                .child(
-                                    Input::new(&tab.stream_filter_input)
-                                        .with_size(Size::XSmall)
-                                        .appearance(false),
-                                ),
+                            full_hit_input(
+                                "stream-filter-slot",
+                                &tab.stream_filter_input,
+                                Input::new(&tab.stream_filter_input)
+                                    .with_size(Size::XSmall)
+                                    .appearance(false),
+                            )
+                            .w(px(200.))
+                            .h(px(24.))
+                            .px_2()
+                            .bg(solid(BG_ELEVATED))
+                            .border_1()
+                            .border_color(solid(BORDER_SUBTLE))
+                            .rounded(px(RADIUS_ROW)),
                         )
                         .child(
                             Button::new("stream-clear")
