@@ -1,7 +1,7 @@
 use gpui_kit::{
     Context, SharedString, Window,
     component::{
-        IconName, Sizable as _, Size, StyledExt as _,
+        Disableable as _, IconName, Sizable as _, Size, StyledExt as _,
         button::{Button, ButtonVariants as _},
         checkbox::Checkbox,
         h_flex,
@@ -15,6 +15,7 @@ use gpui_kit::{
 };
 
 use crate::net::snippets::{SnippetLang, build_resolved_headers, build_resolved_url};
+use crate::net::updater::{CURRENT_VERSION, UpdateState};
 use crate::theme::{
     ACCENT_BLUE, BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER_SUBTLE, COLOR_GET, RADIUS_CONTROL,
     RADIUS_ROW, TEXT_MUTED, TEXT_PRIMARY, solid,
@@ -836,7 +837,115 @@ fn render_settings_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl I
                                             )
                                         }),
                                 ),
-                        ),
+                        )
+                        .child(render_updates_card(ws, cx)),
                 ),
+        )
+}
+
+fn render_updates_card(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
+    let state = &ws.update_state;
+    let is_checking = matches!(state, UpdateState::Checking);
+
+    v_flex()
+        .p_2p5()
+        .gap_2()
+        .bg(solid(BG_ELEVATED))
+        .border_1()
+        .border_color(solid(BORDER_SUBTLE))
+        .rounded(px(RADIUS_ROW))
+        .child(
+            h_flex()
+                .justify_between()
+                .items_center()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(solid(TEXT_MUTED))
+                        .child("Updates"),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(solid(TEXT_MUTED))
+                        .child(SharedString::from(format!("v{CURRENT_VERSION}"))),
+                ),
+        )
+        .child(match state {
+            UpdateState::Idle => div()
+                .text_xs()
+                .text_color(solid(TEXT_MUTED))
+                .child("Check GitHub Releases for new versions.")
+                .into_any_element(),
+            UpdateState::Checking => div()
+                .text_xs()
+                .text_color(solid(TEXT_MUTED))
+                .child("Checking for updates...")
+                .into_any_element(),
+            UpdateState::UpToDate => div()
+                .text_xs()
+                .text_color(solid(COLOR_GET))
+                .child("You are on the latest version.")
+                .into_any_element(),
+            UpdateState::Available(info) => v_flex()
+                .gap_1p5()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(solid(COLOR_GET))
+                        .child(SharedString::from(if info.published_at.is_empty() {
+                            format!("Version {} is available", info.tag_name)
+                        } else {
+                            format!("Version {} available ({})", info.tag_name, info.published_at)
+                        })),
+                )
+                .child(
+                    h_flex()
+                        .gap_1p5()
+                        .child(
+                            Button::new("set-update-download")
+                                .with_size(Size::XSmall)
+                                .primary()
+                                .icon(IconName::ArrowDown)
+                                .label(SharedString::from(format!("Download {}", info.tag_name)))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.open_update_download(cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("set-update-notes")
+                                .with_size(Size::XSmall)
+                                .ghost()
+                                .label("Release Notes")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.open_release_notes(cx);
+                                })),
+                        ),
+                )
+                .into_any_element(),
+            UpdateState::Failed(err) => div()
+                .text_xs()
+                .text_color(solid(TEXT_MUTED))
+                .child(SharedString::from(err.clone()))
+                .into_any_element(),
+        })
+        .child(
+            h_flex().justify_end().child(
+                Button::new("set-check-updates")
+                    .with_size(Size::XSmall)
+                    .secondary()
+                    .disabled(is_checking)
+                    .icon(IconName::RefreshCw)
+                    .label(if is_checking {
+                        "Checking..."
+                    } else {
+                        "Check for Updates"
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.check_for_updates(cx);
+                    })),
+            ),
         )
 }

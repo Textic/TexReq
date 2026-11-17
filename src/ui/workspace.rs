@@ -31,6 +31,7 @@ use crate::net::curl_parser::parse_curl;
 use crate::net::http_client::{execute_http, run_sse_stream};
 use crate::net::runtime::spawn_tokio;
 use crate::net::snippets::{SnippetLang, generate_snippet};
+use crate::net::updater::{self, UpdateState};
 use crate::net::ws_client::{WsCommand, run_ws_session};
 use crate::storage::{LocalStore, git};
 use crate::theme::{
@@ -99,6 +100,7 @@ pub struct Workspace {
     pub settings_timeout_input: Entity<gpui_kit::component::input::InputState>,
     pub settings_proxy_input: Entity<gpui_kit::component::input::InputState>,
     pub git_commit_msg_input: Entity<gpui_kit::component::input::InputState>,
+    pub update_state: UpdateState,
     pub folder_counter: usize,
     pub env_counter: usize,
 }
@@ -182,11 +184,13 @@ impl Workspace {
             settings_timeout_input,
             settings_proxy_input,
             git_commit_msg_input,
+            update_state: UpdateState::Idle,
             folder_counter,
             env_counter,
         };
 
         ws.refresh_snippet_editor(window, cx);
+        ws.run_update_check(false, cx);
         ws
     }
 
@@ -1534,6 +1538,73 @@ impl Workspace {
         .detach();
     }
 
+    pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.update_state, UpdateState::Checking) {
+            return;
+        }
+        self.run_update_check(true, cx);
+    }
+
+    fn run_update_check(&mut self, manual: bool, cx: &mut Context<Self>) {
+        if manual {
+            self.update_state = UpdateState::Checking;
+            cx.notify();
+        }
+        let (tx, mut rx) = unbounded::<Result<Option<updater::UpdateInfo>, String>>();
+        spawn_tokio(async move {
+            let outcome = updater::check_for_updates().await;
+            let _ = tx.unbounded_send(outcome);
+        });
+
+        cx.spawn(async move |this, cx| {
+            if let Some(res) = rx.next().await {
+                let _ = this.update(cx, |this, cx| {
+                    this.update_state = match res {
+                        Ok(Some(info)) => UpdateState::Available(info),
+                        Ok(None) => {
+                            if manual {
+                                UpdateState::UpToDate
+                            } else {
+                                UpdateState::Idle
+                            }
+                        }
+                        Err(err) => {
+                            if manual {
+                                UpdateState::Failed(err)
+                            } else {
+                                UpdateState::Idle
+                            }
+                        }
+                    };
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    pub fn open_update_download(&mut self, cx: &mut Context<Self>) {
+        let url = match &self.update_state {
+            UpdateState::Available(info) => info.download_url.clone(),
+            _ => updater::RELEASES_PAGE_URL.to_string(),
+        };
+        if let Err(err) = updater::open_url_in_browser(&url) {
+            self.update_state = UpdateState::Failed(err);
+            cx.notify();
+        }
+    }
+
+    pub fn open_release_notes(&mut self, cx: &mut Context<Self>) {
+        let url = match &self.update_state {
+            UpdateState::Available(info) => info.release_url.clone(),
+            _ => updater::RELEASES_PAGE_URL.to_string(),
+        };
+        if let Err(err) = updater::open_url_in_browser(&url) {
+            self.update_state = UpdateState::Failed(err);
+            cx.notify();
+        }
+    }
+
     fn on_send_action(&mut self, _: &SendRequest, window: &mut Window, cx: &mut Context<Self>) {
         self.trigger_primary_action(window, cx);
     }
@@ -1612,6 +1683,10 @@ impl Render for Workspace {
         let split_horizontal = self.split_horizontal;
         let show_sidebar = self.show_sidebar;
         let active_tab_id = self.active_tab_id.clone();
+        let available_update = match &self.update_state {
+            UpdateState::Available(info) => Some(info.clone()),
+            _ => None,
+        };
 
         let center_split = if split_horizontal {
             h_resizable("req-res-split-h")
@@ -1758,6 +1833,20 @@ impl Render for Workspace {
                             .h_full()
                             .gap_1p5()
                             .items_center()
+                            .when_some(available_update, |bar, info| {
+                                bar.child(
+                                    Button::new("top-update-pill")
+                                        .with_size(Size::XSmall)
+                                        .secondary()
+                                        .icon(IconName::ArrowDown)
+                                        .label(SharedString::from(format!("Update {}", info.tag_name)))
+                                        .tooltip("New TexReq version available in Settings")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.active_drawer = Some(RightDrawerTab::Settings);
+                                            cx.notify();
+                                        })),
+                                )
+                            })
                             .child(
                                 Button::new("top-toggle-split")
                                     .with_size(Size::XSmall)

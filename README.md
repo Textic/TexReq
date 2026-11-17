@@ -16,16 +16,19 @@ Designed around a flat dark interface with crisp `1px` structural panel cuts, ze
 - **WebSockets & SSE**: Connect to `ws://` / `wss://` endpoints and Server-Sent Event streams with saved message templates and a searchable real-time frame log.
 - **Environments & Response Chaining**: Manage multiple environments (`{{variable}}` interpolation across URLs, params, headers, auth, and body), import `.env` files, and capture response JSON paths automatically into environment variables.
 - **Code Snippets & TLS Inspector**: Generate ready-to-run snippets (`cURL`, JavaScript `fetch`, Rust `reqwest`, Python `requests`) and inspect resolved URLs, TLS info, and TTFB timings.
-- **Settings & Git Workspace Integration**:
+- **Settings, Git Workspace & Auto-Updater**:
   - Toggle auto-save, JSON auto-formatting, global SSL/TLS verification, default redirects, timeout, and proxy settings.
-  - Choose any local workspace directory for storing `collections.json` and `environments.toml`.
-  - Built-in Git panel to initialize a repository (with `.gitignore`), commit collection/environment changes, pull, and push.
+  - Choose any local workspace directory for storing `collections.json` and `environments.toml` with built-in Git support (`init`, `commit`, `pull`, `push`).
+  - Built-in update checker (checks GitHub Releases on launch and on demand under **Settings -> Updates**).
 
 ## Building & Running
 
 ### Prerequisites
 
-- Rust toolchain (`cargo`) with MSVC on Windows (Visual Studio Build Tools / Visual Studio C++ toolchain).
+- Rust toolchain (`cargo`):
+  - **Windows**: Visual Studio C++ Build Tools (MSVC).
+  - **Linux (Ubuntu/Debian)**: `pkg-config cmake clang libssl-dev libfontconfig1-dev libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libx11-dev libvulkan-dev`.
+  - **macOS**: Xcode Command Line Tools.
 - Optional: `git` CLI in `PATH` for integrated Git repository management inside Settings.
 
 ### Run in Release Mode (Recommended for full frame rate)
@@ -43,8 +46,8 @@ cargo build
 
 ## Releases & Branch Workflow
 
-- `dev` branch: active development; pushes and pull requests to `main` automatically run tests and verify release builds via GitHub Actions ([CI](.github/workflows/ci.yml)).
-- `main` branch: merging a PR or pushing to `main` automatically builds and publishes a tagged GitHub Release (`v<major>.<minor>.<patch>`) with Windows executables and SHA-256 checksums ([Release](.github/workflows/release.yml)).
+- `dev` branch: active development; pushes and pull requests to `main` automatically run tests and verify release builds across Windows, Linux, and macOS via GitHub Actions ([CI](.github/workflows/ci.yml)).
+- `main` branch: merging a PR or pushing to `main` automatically builds and publishes a tagged GitHub Release (`v<major>.<minor>.<patch>`) with Windows (`.exe`/`.zip`), Linux (`.tar.gz`), and macOS (`arm64` / `x86_64` `.app.zip`) binaries plus SHA-256 checksums ([Release](.github/workflows/release.yml)).
 
 ## Project Structure
 

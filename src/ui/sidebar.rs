@@ -13,6 +13,7 @@ use gpui_kit::{
     px,
 };
 
+use crate::net::updater::UpdateState;
 use crate::theme::{
     BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER_SUBTLE, COLOR_DELETE, RADIUS_CONTROL, RADIUS_ROW,
     TEXT_MUTED, TEXT_PRIMARY, badge_info, render_app_badge, solid, status_color,
@@ -27,6 +28,7 @@ pub fn render_sidebar(
     let query = ws.search_input.read(cx).value().trim().to_ascii_lowercase();
     let mode = ws.sidebar_mode;
     let settings_active = ws.active_drawer == Some(RightDrawerTab::Settings);
+    let update_available = matches!(ws.update_state, UpdateState::Available(_));
     let active_saved_id = ws
         .active_tab()
         .and_then(|t| t.saved_request_id.clone());
@@ -87,7 +89,11 @@ pub fn render_sidebar(
                             let btn = Button::new("sb-settings")
                                 .with_size(Size::XSmall)
                                 .icon(IconName::Settings)
-                                .tooltip("Settings")
+                                .tooltip(if update_available {
+                                    "Settings (Update available)"
+                                } else {
+                                    "Settings"
+                                })
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.toggle_drawer_no_window(RightDrawerTab::Settings, cx);
                                 }));
