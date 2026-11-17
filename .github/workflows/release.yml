@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build & Publish Windows Release
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout repository with full tag history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Resolve version and next SemVer tag
+        id: ver
+        run: |
+          $cargoToml = Get-Content -Path "Cargo.toml" -Raw
+          if ($cargoToml -notmatch '(?m)^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"') {
+            throw "Could not parse package version from Cargo.toml"
+          }
+          $major = [int]$Matches[1]
+          $minor = [int]$Matches[2]
+          $basePatch = [int]$Matches[3]
+          $cargoVersion = "$major.$minor.$basePatch"
+
+          $headTags = @(git tag --points-at HEAD "v*" | Where-Object { $_ -ne "" })
+          if ($headTags.Count -gt 0 -and "${{ github.event_name }}" -eq "push") {
+            Write-Output "already_tagged=true" >> $env:GITHUB_OUTPUT
+            Write-Output "tag=$($headTags[0])" >> $env:GITHUB_OUTPUT
+            Write-Output "version=$cargoVersion" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          $prefix = "v$major.$minor."
+          $existingTags = @(git tag --list "${prefix}*" | Where-Object { $_ -ne "" })
+          if ($existingTags.Count -eq 0) {
+            $nextPatch = $basePatch
+          } else {
+            $maxPatch = -1
+            foreach ($t in $existingTags) {
+              if ($t -match "^v$major\.$minor\.(\d+)$") {
+                $p = [int]$Matches[1]
+                if ($p -gt $maxPatch) { $maxPatch = $p }
+              }
+            }
+            $nextPatch = [Math]::Max($basePatch, $maxPatch + 1)
+          }
+
+          $nextVersion = "$major.$minor.$nextPatch"
+          $nextTag = "v$nextVersion"
+
+          Write-Host "Resolved release version: $nextVersion (tag: $nextTag)"
+          Write-Output "already_tagged=false" >> $env:GITHUB_OUTPUT
+          Write-Output "cargo_version=$cargoVersion" >> $env:GITHUB_OUTPUT
+          Write-Output "version=$nextVersion" >> $env:GITHUB_OUTPUT
+          Write-Output "tag=$nextTag" >> $env:GITHUB_OUTPUT
+
+      - name: Install Rust toolchain
+        if: steps.ver.outputs.already_tagged != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Cargo cache
+        if: steps.ver.outputs.already_tagged != 'true'
+        uses: Swatinem/rust-cache@v2
+
+      - name: Sync build version in runner Cargo.toml
+        if: steps.ver.outputs.already_tagged != 'true' && steps.ver.outputs.version != steps.ver.outputs.cargo_version
+        run: |
+          $raw = Get-Content -Path "Cargo.toml" -Raw
+          $updated = $raw -replace '(?m)^(version\s*=\s*")\d+\.\d+\.\d+(")', "`${1}${{ steps.ver.outputs.version }}`${2}"
+          Set-Content -Path "Cargo.toml" -Value $updated -NoNewline
+
+      - name: Run tests
+        if: steps.ver.outputs.already_tagged != 'true'
+        run: cargo test
+
+      - name: Build release binary
+        if: steps.ver.outputs.already_tagged != 'true'
+        run: cargo build --release
+
+      - name: Package release artifacts
+        if: steps.ver.outputs.already_tagged != 'true'
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          New-Item -ItemType Directory -Path "dist" -Force | Out-Null
+
+          $exeName = "texreq-$tag-windows-x86_64.exe"
+          $zipName = "texreq-$tag-windows-x86_64.zip"
+
+          Copy-Item "target\release\texreq.exe" "dist\$exeName"
+
+          $zipStage = "dist\stage"
+          New-Item -ItemType Directory -Path $zipStage -Force | Out-Null
+          Copy-Item "target\release\texreq.exe" "$zipStage\texreq.exe"
+          Copy-Item "README.md" "$zipStage\README.md"
+          Copy-Item "PLAN.md" "$zipStage\PLAN.md"
+          Compress-Archive -Path "$zipStage\*" -DestinationPath "dist\$zipName" -Force
+          Remove-Item -Path $zipStage -Recurse -Force
+
+          $hashes = @(
+            (Get-FileHash "dist\$exeName" -Algorithm SHA256),
+            (Get-FileHash "dist\$zipName" -Algorithm SHA256)
+          ) | ForEach-Object { "$($_.Hash.ToLowerInvariant())  $(Split-Path $_.Path -Leaf)" }
+          Set-Content -Path "dist\SHA256SUMS.txt" -Value $hashes
+
+      - name: Create tag and GitHub Release
+        if: steps.ver.outputs.already_tagged != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          gh release create "$tag" `
+            --target "${{ github.sha }}" `
+            --title "TexReq $tag" `
+            --generate-notes `
+            "dist/texreq-$tag-windows-x86_64.exe" `
+            "dist/texreq-$tag-windows-x86_64.zip" `
+            "dist/SHA256SUMS.txt"
