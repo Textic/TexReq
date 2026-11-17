@@ -89,23 +89,15 @@ jobs:
           - name: windows-x86_64
             os: windows
             runner: windows-latest
-            target: x86_64-pc-windows-msvc
-            run_tests: true
+            targets: x86_64-pc-windows-msvc
           - name: linux-x86_64
             os: linux
             runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            run_tests: true
-          - name: macos-arm64
+            targets: x86_64-unknown-linux-gnu
+          - name: macos-arm64-x64
             os: macos
             runner: macos-latest
-            target: aarch64-apple-darwin
-            run_tests: true
-          - name: macos-x86_64
-            os: macos
-            runner: macos-latest
-            target: x86_64-apple-darwin
-            run_tests: false
+            targets: aarch64-apple-darwin x86_64-apple-darwin
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -124,7 +116,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.targets }}
 
       - name: Restore Cargo cache
         uses: Swatinem/rust-cache@v2
@@ -144,12 +136,11 @@ jobs:
         run: |
           python3 -c 'import pathlib, re; p = pathlib.Path("Cargo.toml"); p.write_text(re.sub(r"(?m)^(version\s*=\s*\")\d+\.\d+\.\d+(\")", r"\g<1>${{ needs.prepare.outputs.version }}\g<2>", p.read_text()))'
 
-      - name: Run unit tests
-        if: matrix.run_tests
-        run: cargo test --target ${{ matrix.target }}
-
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Test & build (Windows & Linux)
+        if: matrix.os != 'macos'
+        run: |
+          cargo test --target ${{ matrix.targets }}
+          cargo build --release --target ${{ matrix.targets }}
 
       - name: Package Windows artifacts
         if: matrix.os == 'windows'
@@ -158,7 +149,7 @@ jobs:
           $tag = "${{ needs.prepare.outputs.tag }}"
           New-Item -ItemType Directory -Path "dist" -Force | Out-Null
 
-          $bin = "target\${{ matrix.target }}\release\texreq.exe"
+          $bin = "target\${{ matrix.targets }}\release\texreq.exe"
           Copy-Item $bin "dist\texreq-$tag-windows-x86_64.exe"
 
           $stage = "dist\stage"
@@ -174,26 +165,24 @@ jobs:
         run: |
           TAG="${{ needs.prepare.outputs.tag }}"
           mkdir -p dist/stage/assets
-          cp "target/${{ matrix.target }}/release/texreq" dist/stage/texreq
+          cp "target/${{ matrix.targets }}/release/texreq" dist/stage/texreq
           chmod +x dist/stage/texreq
           cp README.md PLAN.md dist/stage/
           cp assets/texreq.png assets/texreq.svg dist/stage/assets/
           tar -C dist/stage -czf "dist/texreq-$TAG-linux-x86_64.tar.gz" .
           rm -rf dist/stage
 
-      - name: Package macOS .app bundle
+      - name: Build & package macOS .app bundles (Apple Silicon & Intel)
         if: matrix.os == 'macos'
         run: |
           TAG="${{ needs.prepare.outputs.tag }}"
           VER="${{ needs.prepare.outputs.version }}"
-          ARCH_NAME="${{ matrix.name }}"
-          BIN="target/${{ matrix.target }}/release/texreq"
-          APP="dist/TexReq.app"
 
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" dist/TexReq.iconset
-          cp "$BIN" "$APP/Contents/MacOS/texreq"
-          chmod +x "$APP/Contents/MacOS/texreq"
+          cargo test --target aarch64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
 
+          mkdir -p dist dist/TexReq.iconset
           sips -z 16 16     assets/texreq.png --out dist/TexReq.iconset/icon_16x16.png >/dev/null
           sips -z 32 32     assets/texreq.png --out dist/TexReq.iconset/icon_16x16@2x.png >/dev/null
           sips -z 32 32     assets/texreq.png --out dist/TexReq.iconset/icon_32x32.png >/dev/null
@@ -203,9 +192,19 @@ jobs:
           sips -z 256 256   assets/texreq.png --out dist/TexReq.iconset/icon_256x256.png >/dev/null
           sips -z 512 512   assets/texreq.png --out dist/TexReq.iconset/icon_256x256@2x.png >/dev/null
           sips -z 512 512   assets/texreq.png --out dist/TexReq.iconset/icon_512x512.png >/dev/null
-          iconutil -c icns dist/TexReq.iconset -o "$APP/Contents/Resources/TexReq.icns"
+          iconutil -c icns dist/TexReq.iconset -o dist/TexReq.icns
 
-          cat > "$APP/Contents/Info.plist" <<PLIST
+          package_mac() {
+            local rust_target="$1"
+            local arch_label="$2"
+            local app="dist/TexReq.app"
+            rm -rf "$app"
+            mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+            cp "target/$rust_target/release/texreq" "$app/Contents/MacOS/texreq"
+            chmod +x "$app/Contents/MacOS/texreq"
+            cp dist/TexReq.icns "$app/Contents/Resources/TexReq.icns"
+
+            cat > "$app/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -234,8 +233,13 @@ jobs:
           </plist>
           PLIST
 
-          ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/texreq-$TAG-$ARCH_NAME.zip"
-          rm -rf "$APP" dist/TexReq.iconset
+            ditto -c -k --sequesterRsrc --keepParent "$app" "dist/texreq-$TAG-$arch_label.zip"
+            rm -rf "$app"
+          }
+
+          package_mac aarch64-apple-darwin macos-arm64
+          package_mac x86_64-apple-darwin macos-x86_64
+          rm -rf dist/TexReq.iconset dist/TexReq.icns
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
