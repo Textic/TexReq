@@ -4,6 +4,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const REPO_URL: &str = "https://github.com/Textic/TexReq";
 pub const RELEASES_PAGE_URL: &str = "https://github.com/Textic/TexReq/releases";
 const LATEST_RELEASE_API_URL: &str = "https://api.github.com/repos/Textic/TexReq/releases/latest";
 

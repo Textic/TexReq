@@ -26,7 +26,10 @@ impl LocalStore {
     }
 
     pub fn from_settings() -> (Self, AppSettings) {
-        let config_dir = Self::default_config_dir();
+        Self::from_dir(Self::default_config_dir())
+    }
+
+    pub fn from_dir(config_dir: PathBuf) -> (Self, AppSettings) {
         let _ = fs::create_dir_all(&config_dir);
 
         let settings = load_settings_from(&config_dir);

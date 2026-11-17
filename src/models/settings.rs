@@ -16,6 +16,10 @@ pub struct AppSettings {
     pub default_proxy_url: String,
     #[serde(default = "default_true")]
     pub auto_format_json: bool,
+    #[serde(default = "default_true")]
+    pub mcp_mask_secrets: bool,
+    #[serde(default)]
+    pub mcp_read_only: bool,
 }
 
 fn default_true() -> bool {
@@ -36,6 +40,8 @@ impl Default for AppSettings {
             default_timeout_secs: 30,
             default_proxy_url: String::new(),
             auto_format_json: true,
+            mcp_mask_secrets: true,
+            mcp_read_only: false,
         }
     }
 }

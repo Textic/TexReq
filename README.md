@@ -16,10 +16,14 @@ Designed around a flat dark interface with crisp `1px` structural panel cuts, ze
 - **WebSockets & SSE**: Connect to `ws://` / `wss://` endpoints and Server-Sent Event streams with saved message templates and a searchable real-time frame log.
 - **Environments & Response Chaining**: Manage multiple environments (`{{variable}}` interpolation across URLs, params, headers, auth, and body), import `.env` files, and capture response JSON paths automatically into environment variables.
 - **Code Snippets & TLS Inspector**: Generate ready-to-run snippets (`cURL`, JavaScript `fetch`, Rust `reqwest`, Python `requests`) and inspect resolved URLs, TLS info, and TTFB timings.
-- **Settings, Git Workspace & Auto-Updater**:
+- **Centered Modal Settings, Git Workspace & Auto-Updater**:
+  - Clean categorized Settings modal (`General`, `Network & SSL`, `Workspace & Git`, `MCP Server`, `Info`).
   - Toggle auto-save, JSON auto-formatting, global SSL/TLS verification, default redirects, timeout, and proxy settings.
   - Choose any local workspace directory for storing `collections.json` and `environments.toml` with built-in Git support (`init`, `commit`, `pull`, `push`).
-  - Built-in update checker (checks GitHub Releases on launch and on demand under **Settings -> Updates**).
+  - Built-in update checker (checks GitHub Releases on launch and on demand under **Settings -> Info**).
+- **Built-in MCP Server (`--mcp`)**:
+  - Run `texreq --mcp` over `stdio` JSON-RPC 2.0 so AI agents can list/inspect collections and environments, execute HTTP/SSE/WebSocket requests, generate snippets, and manage saved requests.
+  - One-click client installation inside **Settings -> MCP Server** for **Anthropic (Claude Desktop & Claude Code CLI)**, **Antigravity**, and **OpenAI (Codex CLI)**, plus a copyable generic JSON block and security guards (`Mask secrets`, `Read-only mode`).
 
 ## Installation
 
@@ -63,12 +67,13 @@ cargo build
 
 ```text
 src/
-  main.rs          # Window configuration, global shortcuts, theme bootstrap
+  main.rs          # Window configuration, `--mcp` CLI entrypoint, global shortcuts
   theme.rs         # Flat dark color tokens, crisp resize handles, radii
+  mcp/             # Headless stdio JSON-RPC MCP server and client config installers
   models/          # Request, response, collection, environment, WS, and settings data types
   net/             # Async HTTP, SSE, WebSocket clients, variable interpolator, snippets
   storage/         # Local JSON/TOML persistence and Git CLI wrapper
-  ui/              # GPUI-Kit workspace, sidebar, request/response panes, drawers, KV tables
+  ui/              # GPUI-Kit workspace, sidebar, panes, settings modal, drawers, KV tables
 build.rs           # Sets 8 MB stack size on Windows MSVC targets
 ```
 

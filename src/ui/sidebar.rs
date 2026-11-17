@@ -18,7 +18,7 @@ use crate::theme::{
     BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER_SUBTLE, COLOR_DELETE, RADIUS_CONTROL, RADIUS_ROW,
     TEXT_MUTED, TEXT_PRIMARY, badge_info, render_app_badge, solid, status_color,
 };
-use crate::ui::workspace::{RightDrawerTab, SidebarMode, Workspace};
+use crate::ui::workspace::{SidebarMode, Workspace};
 
 pub fn render_sidebar(
     ws: &Workspace,
@@ -27,7 +27,7 @@ pub fn render_sidebar(
 ) -> impl IntoElement {
     let query = ws.search_input.read(cx).value().trim().to_ascii_lowercase();
     let mode = ws.sidebar_mode;
-    let settings_active = ws.active_drawer == Some(RightDrawerTab::Settings);
+    let settings_active = ws.show_settings_modal;
     let update_available = matches!(ws.update_state, UpdateState::Available(_));
     let active_saved_id = ws
         .active_tab()
@@ -94,8 +94,8 @@ pub fn render_sidebar(
                                 } else {
                                     "Settings"
                                 })
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.toggle_drawer_no_window(RightDrawerTab::Settings, cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_settings_modal(window, cx);
                                 }));
                             if settings_active {
                                 btn.secondary()

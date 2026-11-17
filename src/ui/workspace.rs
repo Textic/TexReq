@@ -31,7 +31,11 @@ use crate::net::curl_parser::parse_curl;
 use crate::net::http_client::{execute_http, run_sse_stream};
 use crate::net::runtime::spawn_tokio;
 use crate::net::snippets::{SnippetLang, generate_snippet};
-use crate::net::updater::{self, UpdateState};
+use crate::mcp::installer::{
+    McpClient, McpClientStatus, generic_mcp_json, inspect_all_clients, install_client,
+    resolve_texreq_executable, uninstall_client,
+};
+use crate::net::updater::{self, REPO_URL, UpdateState};
 use crate::net::ws_client::{WsCommand, run_ws_session};
 use crate::storage::{LocalStore, git};
 use crate::theme::{
@@ -43,6 +47,7 @@ use crate::ui::kv_editor::{KvTarget, UiCaptureRow, UiKvRow};
 use crate::ui::request_pane::render_request_pane;
 use crate::ui::response_pane::render_response_pane;
 use crate::ui::right_drawer::render_right_rail_and_drawer;
+use crate::ui::settings_modal::{SettingsCategory, render_settings_modal};
 use crate::ui::sidebar::render_sidebar;
 use crate::ui::tab_session::{BodyKindUi, RequestSubTab, ResponseSubTab, TabSession, should_autoparse_curl};
 
@@ -71,7 +76,6 @@ pub enum RightDrawerTab {
     Snippets,
     Variables,
     NetworkInfo,
-    Settings,
 }
 
 pub struct Workspace {
@@ -103,6 +107,13 @@ pub struct Workspace {
     pub update_state: UpdateState,
     pub folder_counter: usize,
     pub env_counter: usize,
+    pub show_settings_modal: bool,
+    pub settings_category: SettingsCategory,
+    pub mcp_command_path: String,
+    pub mcp_statuses: Vec<McpClientStatus>,
+    pub mcp_notice: Option<String>,
+    pub network_notice: Option<String>,
+    pub mcp_json_viewer: Entity<gpui_kit::component::input::EditorState>,
 }
 
 impl Focusable for Workspace {
@@ -160,6 +171,15 @@ impl Workspace {
 
         let folder_counter = collections.len();
         let env_counter = environments.len();
+        let mcp_command_path = resolve_texreq_executable();
+        let mcp_statuses = inspect_all_clients(&mcp_command_path);
+        let mcp_json_text = generic_mcp_json(&mcp_command_path);
+        let mcp_json_viewer = cx.new(|cx| {
+            gpui_kit::component::input::EditorState::new(window, cx)
+                .language("json")
+                .line_number(false)
+                .default_value(mcp_json_text)
+        });
 
         let mut ws = Self {
             focus_handle,
@@ -187,6 +207,13 @@ impl Workspace {
             update_state: UpdateState::Idle,
             folder_counter,
             env_counter,
+            show_settings_modal: false,
+            settings_category: SettingsCategory::General,
+            mcp_command_path,
+            mcp_statuses,
+            mcp_notice: None,
+            network_notice: None,
+            mcp_json_viewer,
         };
 
         ws.refresh_snippet_editor(window, cx);
@@ -1238,8 +1265,6 @@ impl Workspace {
             self.active_drawer = Some(tab);
             if tab == RightDrawerTab::Snippets {
                 self.refresh_snippet_editor(window, cx);
-            } else if tab == RightDrawerTab::Settings {
-                self.git_status = git::inspect_repo(self.store.workspace_dir());
             }
         }
         cx.notify();
@@ -1250,9 +1275,6 @@ impl Workspace {
             self.active_drawer = None;
         } else {
             self.active_drawer = Some(tab);
-            if tab == RightDrawerTab::Settings {
-                self.git_status = git::inspect_repo(self.store.workspace_dir());
-            }
         }
         cx.notify();
     }
@@ -1354,8 +1376,116 @@ impl Workspace {
         let normalized_timeout = timeout_secs.to_string();
         self.settings_timeout_input
             .update(cx, |s, cx| s.set_value(normalized_timeout, window, cx));
-        self.git_notice = Some("Default network settings updated.".to_string());
+        self.network_notice = Some("Default network settings updated.".to_string());
         cx.notify();
+    }
+
+    pub fn toggle_settings_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.show_settings_modal {
+            self.close_settings(cx);
+        } else {
+            let category = self.settings_category;
+            self.open_settings(category, window, cx);
+        }
+    }
+
+    pub fn open_settings(
+        &mut self,
+        category: SettingsCategory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_settings_modal = true;
+        self.settings_category = category;
+        self.git_status = git::inspect_repo(self.store.workspace_dir());
+        self.refresh_mcp_state(window, cx);
+        cx.notify();
+    }
+
+    pub fn close_settings(&mut self, cx: &mut Context<Self>) {
+        self.show_settings_modal = false;
+        cx.notify();
+    }
+
+    pub fn select_settings_category(
+        &mut self,
+        category: SettingsCategory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_category = category;
+        if category == SettingsCategory::WorkspaceGit {
+            self.git_status = git::inspect_repo(self.store.workspace_dir());
+        } else if category == SettingsCategory::Mcp {
+            self.refresh_mcp_state(window, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn refresh_mcp_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.mcp_command_path = resolve_texreq_executable();
+        self.mcp_statuses = inspect_all_clients(&self.mcp_command_path);
+        let json_text = generic_mcp_json(&self.mcp_command_path);
+        self.mcp_json_viewer.update(cx, |state, cx| {
+            state.set_value(json_text, window, cx);
+        });
+        cx.notify();
+    }
+
+    pub fn install_mcp_client(&mut self, client: McpClient, cx: &mut Context<Self>) {
+        match install_client(client, &self.mcp_command_path) {
+            Ok(msg) => {
+                self.mcp_notice = Some(msg);
+                self.mcp_statuses = inspect_all_clients(&self.mcp_command_path);
+            }
+            Err(err) => {
+                self.mcp_notice = Some(err);
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn uninstall_mcp_client(&mut self, client: McpClient, cx: &mut Context<Self>) {
+        match uninstall_client(client) {
+            Ok(msg) => {
+                self.mcp_notice = Some(msg);
+                self.mcp_statuses = inspect_all_clients(&self.mcp_command_path);
+            }
+            Err(err) => {
+                self.mcp_notice = Some(err);
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn copy_mcp_command(&mut self, cx: &mut Context<Self>) {
+        let cmd = format!("{} --mcp", self.mcp_command_path);
+        cx.write_to_clipboard(ClipboardItem::new_string(cmd));
+        self.mcp_notice = Some("Copied MCP command to clipboard.".to_string());
+        cx.notify();
+    }
+
+    pub fn copy_mcp_json(&mut self, cx: &mut Context<Self>) {
+        let json = generic_mcp_json(&self.mcp_command_path);
+        cx.write_to_clipboard(ClipboardItem::new_string(json));
+        self.mcp_notice = Some("Copied generic MCP JSON to clipboard.".to_string());
+        cx.notify();
+    }
+
+    pub fn set_mcp_mask_secrets(&mut self, mask: bool, cx: &mut Context<Self>) {
+        self.settings.mcp_mask_secrets = mask;
+        self.store.save_settings(&self.settings);
+        cx.notify();
+    }
+
+    pub fn set_mcp_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
+        self.settings.mcp_read_only = read_only;
+        self.store.save_settings(&self.settings);
+        cx.notify();
+    }
+
+    pub fn open_github_repo(&mut self, _cx: &mut Context<Self>) {
+        let _ = updater::open_url_in_browser(REPO_URL);
     }
 
     pub fn pick_workspace_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1660,6 +1790,10 @@ impl Workspace {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.show_settings_modal && ev.keystroke.key == "escape" {
+            self.close_settings(cx);
+            return;
+        }
         if ev.keystroke.modifiers.control && ev.keystroke.key == "enter" {
             self.trigger_primary_action(window, cx);
         }
@@ -1841,9 +1975,8 @@ impl Render for Workspace {
                                         .icon(IconName::ArrowDown)
                                         .label(SharedString::from(format!("Update {}", info.tag_name)))
                                         .tooltip("New TexReq version available in Settings")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.active_drawer = Some(RightDrawerTab::Settings);
-                                            cx.notify();
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.open_settings(SettingsCategory::Info, window, cx);
                                         })),
                                 )
                             })
@@ -1967,10 +2100,14 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_format_json_action))
             .on_action(cx.listener(Self::on_quit_action))
             .on_key_down(cx.listener(Self::on_key_down))
+            .relative()
             .size_full()
             .bg(solid(BG_BASE))
             .text_color(solid(TEXT_PRIMARY))
             .child(main_area)
+            .when(self.show_settings_modal, |root| {
+                root.child(render_settings_modal(self, window, cx))
+            })
     }
 }
 
