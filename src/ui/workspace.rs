@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::Local;
 use futures_channel::mpsc::unbounded;
@@ -122,6 +122,7 @@ pub struct Workspace {
     pub env_name_input: Entity<gpui_kit::component::input::InputState>,
     pub pending_confirm: Option<PendingConfirm>,
     _env_name_sub: gpui_kit::Subscription,
+    _window_activation_sub: gpui_kit::Subscription,
     pub show_settings_modal: bool,
     pub settings_category: SettingsCategory,
     pub mcp_command_path: String,
@@ -140,7 +141,14 @@ impl Focusable for Workspace {
 
 impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (store, settings) = LocalStore::from_settings();
+        let (store, mut settings) = LocalStore::from_settings();
+        let before_linked = settings.linked_folders.len();
+        settings
+            .linked_folders
+            .retain(|raw| Path::new(raw.trim()).exists());
+        if settings.linked_folders.len() != before_linked {
+            store.save_settings(&settings);
+        }
         let git_status = git::GitStatusInfo::default();
         let collections = store.load_all_collections(&settings.linked_folders);
         let folder_git_statuses = HashMap::new();
@@ -215,6 +223,21 @@ impl Workspace {
                 }
             },
         );
+        let _window_activation_sub = cx.observe_window_activation(window, |this, window, cx| {
+            if !window.is_window_active() {
+                return;
+            }
+            let removed = this.prune_missing_linked_folders();
+            if this.collections.iter().any(|f| f.disk_path.is_some())
+                || this.personal_git_status.is_repo
+                || this.active_drawer == Some(RightDrawerTab::Git)
+            {
+                this.schedule_git_refresh(cx);
+            }
+            if removed {
+                cx.notify();
+            }
+        });
         let snippet_viewer = cx.new(|cx| {
             gpui_kit::component::input::EditorState::new(window, cx)
                 .language("bash")
@@ -273,6 +296,7 @@ impl Workspace {
             env_name_input,
             pending_confirm: None,
             _env_name_sub,
+            _window_activation_sub,
             show_settings_modal: false,
             settings_category: SettingsCategory::General,
             mcp_command_path,
@@ -612,11 +636,18 @@ impl Workspace {
         self.git_selected_change = None;
         self.active_drawer = Some(RightDrawerTab::Git);
         self.seed_cached_git_details_for_target();
-        self.run_init_repo_async(dir, true, cx);
+        self.run_init_repo_async(dir, true, true, cx);
         cx.notify();
     }
 
     pub fn toggle_folder(&mut self, folder_id: &str, cx: &mut Context<Self>) {
+        if self.prune_missing_linked_folders()
+            && !self.collections.iter().any(|f| f.id == folder_id)
+        {
+            self.schedule_git_refresh(cx);
+            cx.notify();
+            return;
+        }
         if let Some(folder) = self.collections.iter_mut().find(|f| f.id == folder_id) {
             folder.expanded = !folder.expanded;
             self.store.save_all_collections(&self.collections);
@@ -681,6 +712,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.prune_missing_linked_folders();
+        if !self.collections.iter().any(|f| f.id == folder_id) {
+            self.schedule_git_refresh(cx);
+            cx.notify();
+            return;
+        }
         let mut req = RequestItem::with_defaults(&self.settings);
         req.name = "New Request".to_string();
         let req_id = req.id.clone();
@@ -699,6 +736,7 @@ impl Workspace {
     }
 
     pub fn delete_saved_request(&mut self, folder_id: &str, req_id: &str, cx: &mut Context<Self>) {
+        self.prune_missing_linked_folders();
         if let Some(folder) = self.collections.iter_mut().find(|f| f.id == folder_id) {
             folder.requests.retain(|r| r.id != req_id);
             self.store.save_all_collections(&self.collections);
@@ -714,6 +752,7 @@ impl Workspace {
     }
 
     pub fn save_active_tab(&mut self, cx: &mut Context<Self>) {
+        self.prune_missing_linked_folders();
         let Some(tab) = self.active_tab() else {
             return;
         };
@@ -1722,6 +1761,7 @@ impl Workspace {
     }
 
     fn autosave_saved_tabs(&mut self, cx: &mut Context<Self>) {
+        self.prune_missing_linked_folders();
         if !self.settings.auto_save {
             return;
         }
@@ -1825,13 +1865,16 @@ impl Workspace {
 
     pub fn open_git_drawer(&mut self, folder_id: Option<String>, cx: &mut Context<Self>) {
         self.autosave_saved_tabs(cx);
-        if let Some(fid) = folder_id {
+        let pruned = self.prune_missing_linked_folders();
+        if let Some(fid) = folder_id.filter(|id| self.collections.iter().any(|f| &f.id == id)) {
             self.git_target_folder_id = Some(fid);
         } else {
             self.pick_default_git_target_if_unset();
         }
         self.git_selected_change = None;
-        self.git_notice = None;
+        if !pruned {
+            self.git_notice = None;
+        }
         self.active_drawer = Some(RightDrawerTab::Git);
         self.seed_cached_git_details_for_target();
         self.schedule_git_refresh(cx);
@@ -1843,6 +1886,12 @@ impl Workspace {
     }
 
     pub fn init_folder_git_now(&mut self, folder_id: &str, cx: &mut Context<Self>) {
+        self.prune_missing_linked_folders();
+        if !self.collections.iter().any(|f| f.id == folder_id) {
+            self.schedule_git_refresh(cx);
+            cx.notify();
+            return;
+        }
         self.git_target_folder_id = Some(folder_id.to_string());
         self.git_selected_change = None;
         self.active_drawer = Some(RightDrawerTab::Git);
@@ -1992,6 +2041,71 @@ impl Workspace {
         }
     }
 
+    /// Removes linked folders whose directories were deleted externally from disk,
+    /// detaches any open tabs backed by their requests, and prunes `settings.linked_folders`
+    /// so later saves never recreate deleted directories.
+    fn prune_missing_linked_folders(&mut self) -> bool {
+        let mut removed_names = Vec::new();
+        let mut removed_folder_ids = Vec::new();
+        let mut removed_request_ids = Vec::new();
+
+        for folder in &self.collections {
+            if let Some(dir) = folder.disk_path.as_ref()
+                && !dir.exists()
+            {
+                removed_folder_ids.push(folder.id.clone());
+                removed_names.push(folder.name.clone());
+                for req in &folder.requests {
+                    removed_request_ids.push(req.id.clone());
+                }
+            }
+        }
+
+        if removed_folder_ids.is_empty() {
+            return false;
+        }
+
+        self.collections
+            .retain(|f| !removed_folder_ids.contains(&f.id));
+        for fid in &removed_folder_ids {
+            self.folder_git_statuses.remove(fid);
+        }
+
+        if !removed_request_ids.is_empty() {
+            for tab in &mut self.tabs {
+                if tab
+                    .saved_request_id
+                    .as_ref()
+                    .is_some_and(|sid| removed_request_ids.contains(sid))
+                {
+                    tab.saved_request_id = None;
+                    tab.dirty = true;
+                }
+            }
+        }
+
+        self.settings
+            .linked_folders
+            .retain(|raw| Path::new(raw.trim()).exists());
+        self.store.save_settings(&self.settings);
+
+        if self
+            .git_target_folder_id
+            .as_ref()
+            .is_some_and(|fid| removed_folder_ids.contains(fid))
+        {
+            self.git_target_folder_id = None;
+            self.git_selected_change = None;
+            self.seed_cached_git_details_for_target();
+        }
+
+        self.git_notice = Some(format!(
+            "Removed missing folder(s) deleted from disk: {}",
+            removed_names.join(", ")
+        ));
+        true
+    }
+
     fn refresh_folder_git_if_linked(&mut self, folder_id: &str, cx: &mut Context<Self>) {
         let is_linked = self
             .collections
@@ -2006,6 +2120,7 @@ impl Workspace {
     }
 
     pub fn schedule_git_refresh(&mut self, cx: &mut Context<Self>) {
+        self.prune_missing_linked_folders();
         self.git_refresh_gen = self.git_refresh_gen.wrapping_add(1);
         let seq = self.git_refresh_gen;
         self.git_refresh_in_flight = true;
@@ -2257,17 +2372,19 @@ impl Workspace {
         self.autosave_saved_tabs(cx);
         self.save_active_env_vars_silent(cx);
         self.store.save_all_collections(&self.collections);
-        if self.active_git_linked_folder().is_none() {
+        let is_linked = self.active_git_linked_folder().is_some();
+        if !is_linked {
             self.store.save_environments(&self.environments);
         }
 
         let target_dir = self.active_git_target_dir();
-        self.run_init_repo_async(target_dir, false, cx);
+        self.run_init_repo_async(target_dir, is_linked, false, cx);
     }
 
     fn run_init_repo_async(
         &mut self,
         target_dir: PathBuf,
+        is_linked: bool,
         only_if_not_repo: bool,
         cx: &mut Context<Self>,
     ) {
@@ -2282,7 +2399,7 @@ impl Workspace {
                     git::ensure_workspace_gitignore(&target_dir);
                     format!("Linked folder to Git repository at {}", target_dir.display())
                 } else {
-                    match git::init_repo(&target_dir) {
+                    match git::init_repo_with_initial_commit(&target_dir, is_linked) {
                         Ok(msg) => msg,
                         Err(err) => format!("Git init failed: {err}"),
                     }

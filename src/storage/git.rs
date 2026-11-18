@@ -746,6 +746,53 @@ pub fn init_repo(dir: &Path) -> Result<String, String> {
     })
 }
 
+/// Initializes a `main`-branch Git repository, writes `.gitignore`, and immediately creates
+/// an initial commit for TexReq files so newly initialized folders start with a clean tree.
+pub fn init_repo_with_initial_commit(dir: &Path, is_linked: bool) -> Result<String, String> {
+    init_repo(dir)?;
+    let commit_res = if is_linked {
+        commit_linked_folder(dir, "Initial commit")
+    } else {
+        commit_workspace(dir, "Initial commit")
+    };
+    match commit_res {
+        Ok(_) => Ok("Initialized Git repository (main) with initial commit".to_string()),
+        Err(err) if is_missing_identity_error(&err) => {
+            let candidates: &[&str] = if is_linked {
+                &["collection.json", ".gitignore"]
+            } else {
+                &["collections.json", "environments.toml", ".gitignore"]
+            };
+            match commit_paths_with_identity(
+                dir,
+                "Initial commit",
+                candidates,
+                Some(("TexReq", "texreq@local")),
+            ) {
+                Ok(_) => Ok(
+                    "Initialized Git repository (main) with initial commit (fallback author)"
+                        .to_string(),
+                ),
+                Err(inner) => Ok(format!(
+                    "Initialized Git repository (main) (initial commit skipped: {inner})"
+                )),
+            }
+        }
+        Err(err) => Ok(format!(
+            "Initialized Git repository (main) (initial commit skipped: {err})"
+        )),
+    }
+}
+
+fn is_missing_identity_error(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("author identity")
+        || lower.contains("user.name")
+        || lower.contains("user.email")
+        || lower.contains("unable to auto-detect email")
+        || lower.contains("please tell me who you are")
+}
+
 pub fn commit_workspace(dir: &Path, message: &str) -> Result<String, String> {
     commit_paths(
         dir,
@@ -759,6 +806,15 @@ pub fn commit_linked_folder(dir: &Path, message: &str) -> Result<String, String>
 }
 
 fn commit_paths(dir: &Path, message: &str, candidates: &[&str]) -> Result<String, String> {
+    commit_paths_with_identity(dir, message, candidates, None)
+}
+
+fn commit_paths_with_identity(
+    dir: &Path,
+    message: &str,
+    candidates: &[&str],
+    fallback_author: Option<(&str, &str)>,
+) -> Result<String, String> {
     ensure_workspace_gitignore(dir);
     let mut files_to_stage = Vec::new();
     for &candidate in candidates {
@@ -786,7 +842,13 @@ fn commit_paths(dir: &Path, message: &str, candidates: &[&str]) -> Result<String
     } else {
         message.trim()
     };
-    run_git(dir, &["commit", "-m", commit_msg])
+    if let Some((name, email)) = fallback_author {
+        let name_cfg = format!("user.name={name}");
+        let email_cfg = format!("user.email={email}");
+        run_git(dir, &["-c", &name_cfg, "-c", &email_cfg, "commit", "-m", commit_msg])
+    } else {
+        run_git(dir, &["commit", "-m", commit_msg])
+    }
 }
 
 pub fn pull_repo(dir: &Path) -> Result<String, String> {
@@ -957,6 +1019,40 @@ mod tests {
         discard_file_change(details.repo_root.as_deref().unwrap(), &untracked, details.has_head)
             .expect("deleting untracked file should succeed");
         assert!(!dir.join("scratch.txt").exists());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn init_repo_with_initial_commit_starts_clean_on_main() {
+        let dir = std::env::temp_dir().join(format!("texreq_git_init_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        if !inspect_repo(&dir).git_available {
+            let _ = fs::remove_dir_all(dir);
+            return;
+        }
+
+        let folder = CollectionFolder::new("Clean Start");
+        fs::write(
+            dir.join("collection.json"),
+            serde_json::to_string_pretty(&folder).unwrap(),
+        )
+        .unwrap();
+
+        init_repo_with_initial_commit(&dir, true).expect("init with initial commit should succeed");
+        let details = inspect_repo_details(&dir, true);
+        assert!(details.status.is_repo);
+        assert_eq!(details.status.branch, "main");
+        assert!(details.has_head);
+        assert_eq!(details.status.changed_files, 0);
+        assert!(details.changes.is_empty());
+        assert!(
+            details
+                .recent_commits
+                .first()
+                .is_some_and(|c| c.summary == "Initial commit")
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

@@ -97,7 +97,7 @@ impl LocalStore {
 
     pub fn load_linked_folder(&self, dir: &Path) -> Result<CollectionFolder, String> {
         if !dir.exists() {
-            fs::create_dir_all(dir).map_err(|e| format!("Failed to access folder {}: {e}", dir.display()))?;
+            return Err(format!("Linked folder does not exist on disk: {}", dir.display()));
         }
         let col_file = dir.join("collection.json");
         if col_file.exists() {
@@ -125,6 +125,12 @@ impl LocalStore {
         let Some(dir) = folder.disk_path.as_ref() else {
             return Ok(());
         };
+        if !dir.exists() {
+            return Err(format!(
+                "Linked folder '{}' no longer exists on disk",
+                dir.display()
+            ));
+        }
         let path = dir.join("collection.json");
         let json = serde_json::to_string_pretty(folder)
             .map_err(|e| format!("Failed to serialize folder: {e}"))?;
@@ -285,6 +291,31 @@ mod tests {
         assert!(all[1].disk_path.is_some());
         assert_eq!(all[1].requests.len(), 1);
         assert_eq!(store.load_collections().len(), 1);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn does_not_recreate_deleted_linked_folder_on_load_or_save() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("texreq_deleted_dir_{}", uuid::Uuid::new_v4()));
+        let store = LocalStore::at_dir(temp_dir.clone());
+        let linked_dir = temp_dir.join("vanished");
+        fs::create_dir_all(&linked_dir).unwrap();
+
+        let linked = store.load_linked_folder(&linked_dir).unwrap();
+        assert!(linked_dir.join("collection.json").exists());
+
+        fs::remove_dir_all(&linked_dir).unwrap();
+        assert!(!linked_dir.exists());
+
+        let reloaded = store.load_all_collections(&[linked_dir.to_string_lossy().to_string()]);
+        assert!(reloaded.is_empty());
+        assert!(!linked_dir.exists());
+
+        let save_res = store.save_linked_folder(&linked);
+        assert!(save_res.is_err());
+        assert!(!linked_dir.exists());
 
         let _ = fs::remove_dir_all(temp_dir);
     }
