@@ -19,7 +19,6 @@ $Stage = Join-Path $OutAbs "stage_win"
 New-Item -ItemType Directory -Path $Stage -Force | Out-Null
 Copy-Item $BinAbs (Join-Path $Stage "texreq.exe")
 Copy-Item (Join-Path $RootDir "README.md") (Join-Path $Stage "README.md")
-Copy-Item (Join-Path $RootDir "PLAN.md") (Join-Path $Stage "PLAN.md")
 Compress-Archive -Path "$Stage\*" -DestinationPath (Join-Path $OutAbs "texreq-$Tag-windows-x86_64.zip") -Force
 Remove-Item -Path $Stage -Recurse -Force
 
