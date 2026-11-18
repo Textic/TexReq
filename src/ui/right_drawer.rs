@@ -539,9 +539,17 @@ fn render_git_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         .size_full()
         .p_3()
         .gap_2p5()
-        .child(render_git_drawer_header(git.is_repo, &git.branch, cx))
+        .child(render_git_drawer_header(
+            git.is_repo,
+            &git.branch,
+            ws.git_refresh_in_flight,
+            cx,
+        ))
         .child(render_git_target_selector(ws, &target_name, &target_path, cx))
-        .when(!git.git_available, |el| {
+        .when(!git.git_available && ws.git_refresh_in_flight, |el| {
+            el.child(muted_notice_card("Checking Git repository..."))
+        })
+        .when(!git.git_available && !ws.git_refresh_in_flight, |el| {
             el.child(muted_notice_card(
                 "Git CLI was not found in PATH. Install Git to track changes.",
             ))
@@ -583,6 +591,7 @@ fn render_git_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
 fn render_git_drawer_header(
     is_repo: bool,
     branch: &str,
+    refreshing: bool,
     cx: &mut Context<Workspace>,
 ) -> impl IntoElement {
     h_flex()
@@ -619,6 +628,14 @@ fn render_git_drawer_header(
                             .text_xs()
                             .text_color(solid(COLOR_GET))
                             .child(SharedString::from(branch.to_string())),
+                    )
+                })
+                .when(refreshing, |row| {
+                    row.child(
+                        div()
+                            .text_xs()
+                            .text_color(solid(TEXT_MUTED))
+                            .child("Syncing..."),
                     )
                 }),
         )
@@ -667,7 +684,7 @@ fn render_git_target_selector(
 ) -> impl IntoElement {
     let view = cx.entity().clone();
     let active_target = ws.git_target_folder_id.clone();
-    let personal_status = crate::storage::git::inspect_repo(ws.store.workspace_dir());
+    let personal_status = ws.personal_git_status.clone();
     let linked_items: Vec<(String, String, Option<crate::storage::git::GitStatusInfo>)> = ws
         .collections
         .iter()
@@ -1146,8 +1163,8 @@ fn render_diff_viewer_card(ws: &Workspace) -> impl IntoElement {
                 .border_1()
                 .border_color(solid(BORDER))
                 .rounded(px(RADIUS_CONTROL))
-                .children(ws.git_diff_lines.iter().map(|line| {
-                    let (bg_opt, fg_hex) = diff_line_colors(line.kind);
+                .children(ws.git_diff_lines.iter().map(|(kind, text)| {
+                    let (bg_opt, fg_hex) = diff_line_colors(*kind);
                     div()
                         .w_full()
                         .px_1p5()
@@ -1157,7 +1174,7 @@ fn render_diff_viewer_card(ws: &Workspace) -> impl IntoElement {
                         .font_family("Consolas")
                         .text_xs()
                         .text_color(solid(fg_hex))
-                        .child(SharedString::from(line.text.clone()))
+                        .child(text.clone())
                 })),
         )
 }
