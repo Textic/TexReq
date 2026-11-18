@@ -44,7 +44,6 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#BinaryPath}"; DestDir: "{app}"; DestName: "texreq.exe"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\PLAN.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\assets\texreq.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 
 [Icons]

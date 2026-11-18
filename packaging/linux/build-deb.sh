@@ -72,7 +72,6 @@ install -m 755 "$BIN_ABS" "$TAR_STAGE/texreq"
 install -m 755 "$ROOT_DIR/packaging/linux/install.sh" "$TAR_STAGE/install.sh"
 install -m 644 "$ROOT_DIR/packaging/linux/texreq.desktop" "$TAR_STAGE/texreq.desktop"
 install -m 644 "$ROOT_DIR/README.md" "$TAR_STAGE/README.md"
-install -m 644 "$ROOT_DIR/PLAN.md" "$TAR_STAGE/PLAN.md"
 install -m 644 "$ROOT_DIR/assets/texreq.png" "$TAR_STAGE/assets/texreq.png"
 install -m 644 "$ROOT_DIR/assets/texreq.svg" "$TAR_STAGE/assets/texreq.svg"
 tar -C "$TAR_STAGE" -czf "$OUT_ABS/texreq-$TAG-linux-x86_64.tar.gz" .

@@ -2,12 +2,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use crate::models::{CollectionFolder, RequestItem};
 use crate::theme::badge_info;
 
-const MAX_DIFF_PREVIEW_LINES: usize = 450;
+const MAX_DIFF_PREVIEW_LINES: usize = 200;
 const MAX_UNTRACKED_PREVIEW_BYTES: usize = 200 * 1024;
+
+static GIT_AVAILABLE: OnceLock<bool> = OnceLock::new();
 
 #[derive(Debug, Clone, Default)]
 pub struct GitStatusInfo {
@@ -90,6 +93,7 @@ pub struct GitRepoDetails {
 fn git_cmd(dir: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.current_dir(dir);
+    cmd.env("LC_ALL", "C");
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -97,6 +101,20 @@ fn git_cmd(dir: &Path) -> Command {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd
+}
+
+fn is_git_available() -> bool {
+    *GIT_AVAILABLE.get_or_init(|| {
+        let mut cmd = Command::new("git");
+        cmd.arg("--version");
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        cmd.output().is_ok_and(|o| o.status.success())
+    })
 }
 
 fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -132,10 +150,7 @@ pub fn inspect_folder_repo(dir: &Path) -> GitStatusInfo {
 }
 
 fn inspect_repo_with_scope(dir: &Path, status_path: Option<&str>) -> GitStatusInfo {
-    let git_available = git_cmd(dir)
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success());
+    let git_available = is_git_available();
     if !git_available || !dir.exists() {
         return GitStatusInfo {
             git_available,
@@ -143,20 +158,22 @@ fn inspect_repo_with_scope(dir: &Path, status_path: Option<&str>) -> GitStatusIn
         };
     }
 
-    let is_repo = run_git(dir, &["rev-parse", "--is-inside-work-tree"]).is_ok_and(|s| s == "true");
-    if !is_repo {
+    let Ok(branch_out) = run_git(dir, &["branch", "--show-current"]) else {
         return GitStatusInfo {
             git_available: true,
             is_repo: false,
             ..Default::default()
         };
-    }
+    };
 
-    let branch = run_git(dir, &["branch", "--show-current"])
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| run_git(dir, &["rev-parse", "--short", "HEAD"]).ok())
-        .unwrap_or_else(|| "main".to_string());
+    let branch = if !branch_out.is_empty() {
+        branch_out
+    } else {
+        run_git(dir, &["rev-parse", "--short", "HEAD"])
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "main".to_string())
+    };
 
     let mut status_args = vec!["status", "--porcelain=v1", "-uall"];
     if let Some(path) = status_path {
@@ -166,13 +183,18 @@ fn inspect_repo_with_scope(dir: &Path, status_path: Option<&str>) -> GitStatusIn
         .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0);
 
-    let remote_url = run_git(dir, &["remote", "get-url", "origin"])
-        .ok()
-        .filter(|s| !s.is_empty());
-
-    let last_commit = run_git(dir, &["log", "-1", "--pretty=format:%h %s"])
-        .ok()
-        .filter(|s| !s.is_empty());
+    let (remote_url, last_commit) = if status_path.is_none() {
+        (
+            run_git(dir, &["remote", "get-url", "origin"])
+                .ok()
+                .filter(|s| !s.is_empty()),
+            run_git(dir, &["log", "-1", "--pretty=format:%h %s"])
+                .ok()
+                .filter(|s| !s.is_empty()),
+        )
+    } else {
+        (None, None)
+    };
 
     GitStatusInfo {
         git_available: true,
@@ -185,25 +207,59 @@ fn inspect_repo_with_scope(dir: &Path, status_path: Option<&str>) -> GitStatusIn
 }
 
 pub fn inspect_repo_details(dir: &Path, folder_scoped: bool) -> GitRepoDetails {
-    let scope = if folder_scoped { Some(".") } else { None };
-    let status = inspect_repo_with_scope(dir, scope);
-    if !status.git_available || !status.is_repo {
+    let git_available = is_git_available();
+    if !git_available || !dir.exists() {
         return GitRepoDetails {
-            status,
+            status: GitStatusInfo {
+                git_available,
+                ..Default::default()
+            },
             ..Default::default()
         };
     }
 
-    let repo_root = run_git(dir, &["rev-parse", "--show-toplevel"])
-        .ok()
+    let rev_args: &[&str] = if folder_scoped {
+        &["rev-parse", "--show-toplevel", "--show-prefix"]
+    } else {
+        &["rev-parse", "--show-toplevel"]
+    };
+    let Ok(rev_out) = run_git_raw(dir, rev_args) else {
+        return GitRepoDetails {
+            status: GitStatusInfo {
+                git_available: true,
+                is_repo: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+    };
+
+    let mut rev_lines = rev_out.lines();
+    let repo_root = rev_lines
+        .next()
+        .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(PathBuf::from);
     let prefix = if folder_scoped {
-        run_git(dir, &["rev-parse", "--show-prefix"]).unwrap_or_default()
+        rev_lines.next().unwrap_or("").trim().to_string()
     } else {
         String::new()
     };
+
     let has_head = run_git(dir, &["rev-parse", "--verify", "HEAD"]).is_ok();
+    let branch = run_git(dir, &["branch", "--show-current"])
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            if has_head {
+                run_git(dir, &["rev-parse", "--short", "HEAD"])
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "main".to_string());
 
     let mut status_args = vec!["-c", "core.quotePath=false", "status", "--porcelain=v1", "-uall"];
     if folder_scoped {
@@ -212,6 +268,10 @@ pub fn inspect_repo_details(dir: &Path, folder_scoped: bool) -> GitRepoDetails {
     let changes = run_git_raw(dir, &status_args)
         .map(|raw| parse_porcelain_changes(&raw, &prefix))
         .unwrap_or_default();
+
+    let remote_url = run_git(dir, &["remote", "get-url", "origin"])
+        .ok()
+        .filter(|s| !s.is_empty());
 
     let recent_commits = if has_head {
         let mut log_args = vec!["log", "-n", "5", "--pretty=format:%h%x09%s%x09%cr"];
@@ -229,6 +289,19 @@ pub fn inspect_repo_details(dir: &Path, folder_scoped: bool) -> GitRepoDetails {
         parsed
     } else {
         Vec::new()
+    };
+
+    let last_commit = recent_commits
+        .first()
+        .map(|c| format!("{} {}", c.hash, c.summary));
+
+    let status = GitStatusInfo {
+        git_available: true,
+        is_repo: true,
+        branch,
+        changed_files: changes.len(),
+        remote_url,
+        last_commit,
     };
 
     let request_changes = match repo_root.as_deref() {
@@ -656,13 +729,68 @@ pub fn init_repo(dir: &Path) -> Result<String, String> {
     if !dir.exists() {
         fs::create_dir_all(dir).map_err(|e| format!("Failed to create folder: {e}"))?;
     }
-    let msg = run_git(dir, &["init"])?;
+    let msg = match run_git(dir, &["init", "-b", "main"]) {
+        Ok(out) => out,
+        Err(_) => {
+            // Fallback for older Git versions (< 2.28) without `git init -b`.
+            let out = run_git(dir, &["init"])?;
+            let _ = run_git(dir, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+            out
+        }
+    };
     ensure_workspace_gitignore(dir);
     Ok(if msg.is_empty() {
-        "Initialized Git repository".to_string()
+        "Initialized Git repository (main)".to_string()
     } else {
         msg
     })
+}
+
+/// Initializes a `main`-branch Git repository, writes `.gitignore`, and immediately creates
+/// an initial commit for TexReq files so newly initialized folders start with a clean tree.
+pub fn init_repo_with_initial_commit(dir: &Path, is_linked: bool) -> Result<String, String> {
+    init_repo(dir)?;
+    let commit_res = if is_linked {
+        commit_linked_folder(dir, "Initial commit")
+    } else {
+        commit_workspace(dir, "Initial commit")
+    };
+    match commit_res {
+        Ok(_) => Ok("Initialized Git repository (main) with initial commit".to_string()),
+        Err(err) if is_missing_identity_error(&err) => {
+            let candidates: &[&str] = if is_linked {
+                &["collection.json", ".gitignore"]
+            } else {
+                &["collections.json", "environments.toml", ".gitignore"]
+            };
+            match commit_paths_with_identity(
+                dir,
+                "Initial commit",
+                candidates,
+                Some(("TexReq", "texreq@local")),
+            ) {
+                Ok(_) => Ok(
+                    "Initialized Git repository (main) with initial commit (fallback author)"
+                        .to_string(),
+                ),
+                Err(inner) => Ok(format!(
+                    "Initialized Git repository (main) (initial commit skipped: {inner})"
+                )),
+            }
+        }
+        Err(err) => Ok(format!(
+            "Initialized Git repository (main) (initial commit skipped: {err})"
+        )),
+    }
+}
+
+fn is_missing_identity_error(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("author identity")
+        || lower.contains("user.name")
+        || lower.contains("user.email")
+        || lower.contains("unable to auto-detect email")
+        || lower.contains("please tell me who you are")
 }
 
 pub fn commit_workspace(dir: &Path, message: &str) -> Result<String, String> {
@@ -678,6 +806,15 @@ pub fn commit_linked_folder(dir: &Path, message: &str) -> Result<String, String>
 }
 
 fn commit_paths(dir: &Path, message: &str, candidates: &[&str]) -> Result<String, String> {
+    commit_paths_with_identity(dir, message, candidates, None)
+}
+
+fn commit_paths_with_identity(
+    dir: &Path,
+    message: &str,
+    candidates: &[&str],
+    fallback_author: Option<(&str, &str)>,
+) -> Result<String, String> {
     ensure_workspace_gitignore(dir);
     let mut files_to_stage = Vec::new();
     for &candidate in candidates {
@@ -705,7 +842,13 @@ fn commit_paths(dir: &Path, message: &str, candidates: &[&str]) -> Result<String
     } else {
         message.trim()
     };
-    run_git(dir, &["commit", "-m", commit_msg])
+    if let Some((name, email)) = fallback_author {
+        let name_cfg = format!("user.name={name}");
+        let email_cfg = format!("user.email={email}");
+        run_git(dir, &["-c", &name_cfg, "-c", &email_cfg, "commit", "-m", commit_msg])
+    } else {
+        run_git(dir, &["commit", "-m", commit_msg])
+    }
 }
 
 pub fn pull_repo(dir: &Path) -> Result<String, String> {
@@ -741,6 +884,7 @@ mod tests {
 
         let unborn = inspect_repo_details(&dir, false);
         assert!(unborn.status.is_repo);
+        assert_eq!(unborn.status.branch, "main");
         assert!(!unborn.has_head);
         assert!(unborn.changes.iter().any(|c| c.display_path == "collections.json"));
         let first_preview = read_file_diff(
@@ -755,6 +899,7 @@ mod tests {
 
         let after = inspect_repo(&dir);
         assert!(after.is_repo);
+        assert_eq!(after.branch, "main");
         assert_eq!(after.changed_files, 0);
         assert!(after.last_commit.is_some());
 
@@ -874,6 +1019,40 @@ mod tests {
         discard_file_change(details.repo_root.as_deref().unwrap(), &untracked, details.has_head)
             .expect("deleting untracked file should succeed");
         assert!(!dir.join("scratch.txt").exists());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn init_repo_with_initial_commit_starts_clean_on_main() {
+        let dir = std::env::temp_dir().join(format!("texreq_git_init_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+
+        if !inspect_repo(&dir).git_available {
+            let _ = fs::remove_dir_all(dir);
+            return;
+        }
+
+        let folder = CollectionFolder::new("Clean Start");
+        fs::write(
+            dir.join("collection.json"),
+            serde_json::to_string_pretty(&folder).unwrap(),
+        )
+        .unwrap();
+
+        init_repo_with_initial_commit(&dir, true).expect("init with initial commit should succeed");
+        let details = inspect_repo_details(&dir, true);
+        assert!(details.status.is_repo);
+        assert_eq!(details.status.branch, "main");
+        assert!(details.has_head);
+        assert_eq!(details.status.changed_files, 0);
+        assert!(details.changes.is_empty());
+        assert!(
+            details
+                .recent_commits
+                .first()
+                .is_some_and(|c| c.summary == "Initial commit")
+        );
 
         let _ = fs::remove_dir_all(dir);
     }
