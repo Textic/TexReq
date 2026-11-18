@@ -78,6 +78,7 @@ pub enum RightDrawerTab {
     Snippets,
     Variables,
     NetworkInfo,
+    Git,
 }
 
 pub struct Workspace {
@@ -110,6 +111,10 @@ pub struct Workspace {
     pub folder_counter: usize,
     pub folder_git_statuses: HashMap<String, git::GitStatusInfo>,
     pub git_target_folder_id: Option<String>,
+    pub git_details: git::GitRepoDetails,
+    pub git_selected_change: Option<String>,
+    pub git_diff_lines: Vec<git::GitDiffLine>,
+    pub git_show_recent_commits: bool,
     pub env_name_input: Entity<gpui_kit::component::input::InputState>,
     pub pending_confirm: Option<PendingConfirm>,
     _env_name_sub: gpui_kit::Subscription,
@@ -253,6 +258,10 @@ impl Workspace {
             folder_counter,
             folder_git_statuses,
             git_target_folder_id: None,
+            git_details: git::GitRepoDetails::default(),
+            git_selected_change: None,
+            git_diff_lines: Vec::new(),
+            git_show_recent_commits: false,
             env_name_input,
             pending_confirm: None,
             _env_name_sub,
@@ -524,6 +533,90 @@ impl Workspace {
                 cx.notify();
             }
         }
+    }
+
+    pub fn make_folder_git_dialog(
+        &mut self,
+        folder_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let fid = folder_id.to_string();
+        self.pick_single_path(false, true, window, cx, move |this, folder_dir, _window, cx| {
+            this.apply_make_folder_git(&fid, folder_dir, cx);
+        });
+    }
+
+    fn apply_make_folder_git(
+        &mut self,
+        folder_id: &str,
+        dir: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        self.autosave_saved_tabs(cx);
+        let canonical_target = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        let already_linked = self.collections.iter().any(|f| {
+            f.disk_path.as_ref().is_some_and(|p| {
+                std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == canonical_target
+            })
+        });
+        if already_linked {
+            self.git_notice = Some("That directory is already linked as a collection folder.".to_string());
+            self.active_drawer = Some(RightDrawerTab::Git);
+            self.refresh_all_git_statuses();
+            cx.notify();
+            return;
+        }
+        if dir.join("collection.json").exists() {
+            self.git_notice = Some(
+                "Chosen folder already contains collection.json. Use Link Folder to open it without overwriting."
+                    .to_string(),
+            );
+            self.active_drawer = Some(RightDrawerTab::Git);
+            self.refresh_all_git_statuses();
+            cx.notify();
+            return;
+        }
+
+        let Some(pos) = self
+            .collections
+            .iter()
+            .position(|f| f.id == folder_id && f.disk_path.is_none())
+        else {
+            return;
+        };
+
+        self.collections[pos].disk_path = Some(dir.clone());
+        self.collections[pos].expanded = true;
+        if let Err(err) = self.store.save_linked_folder(&self.collections[pos]) {
+            self.collections[pos].disk_path = None;
+            self.git_notice = Some(err);
+            self.active_drawer = Some(RightDrawerTab::Git);
+            cx.notify();
+            return;
+        }
+
+        self.store.save_all_collections(&self.collections);
+        let normalized = dir.to_string_lossy().to_string();
+        if !self.settings.linked_folders.iter().any(|p| p == &normalized) {
+            self.settings.linked_folders.push(normalized);
+            self.store.save_settings(&self.settings);
+        }
+
+        if !git::inspect_folder_repo(&dir).is_repo {
+            match git::init_repo(&dir) {
+                Ok(msg) => self.git_notice = Some(msg),
+                Err(err) => self.git_notice = Some(format!("Folder linked, but git init failed: {err}")),
+            }
+        } else {
+            git::ensure_workspace_gitignore(&dir);
+            self.git_notice = Some(format!("Linked folder to Git repository at {}", dir.display()));
+        }
+
+        self.git_target_folder_id = Some(folder_id.to_string());
+        self.active_drawer = Some(RightDrawerTab::Git);
+        self.refresh_all_git_statuses();
+        cx.notify();
     }
 
     pub fn toggle_folder(&mut self, folder_id: &str, cx: &mut Context<Self>) {
@@ -1431,8 +1524,50 @@ impl Workspace {
             | Some(PendingConfirm::UnlinkFolder { id, .. }) => {
                 self.delete_folder(&id, cx);
             }
+            Some(PendingConfirm::DiscardGitChange {
+                repo_root,
+                file,
+                has_head,
+            }) => {
+                match git::discard_file_change(&repo_root, &file, has_head) {
+                    Ok(msg) => {
+                        self.git_notice = Some(msg);
+                        self.reload_or_seed_workspace(window, cx);
+                        self.sync_open_saved_tabs_after_reload(window, cx);
+                    }
+                    Err(err) => {
+                        self.git_notice = Some(format!("Discard failed: {err}"));
+                        self.refresh_all_git_statuses();
+                    }
+                }
+                cx.notify();
+            }
             None => {}
         }
+    }
+
+    fn sync_open_saved_tabs_after_reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut by_id: HashMap<String, RequestItem> = HashMap::new();
+        for folder in &self.collections {
+            for req in &folder.requests {
+                by_id.insert(req.id.clone(), req.clone());
+            }
+        }
+        let existing_tabs = std::mem::take(&mut self.tabs);
+        for mut tab in existing_tabs {
+            if let Some(sid) = tab.saved_request_id.clone() {
+                if let Some(req) = by_id.get(&sid) {
+                    let mut rebuilt = TabSession::from_request(req, Some(sid), window, cx);
+                    rebuilt.id = tab.id;
+                    self.tabs.push(rebuilt);
+                    continue;
+                }
+                tab.saved_request_id = None;
+                tab.dirty = true;
+            }
+            self.tabs.push(tab);
+        }
+        self.refresh_snippet_editor(window, cx);
     }
 
     pub fn delete_environment(
@@ -1555,6 +1690,11 @@ impl Workspace {
             self.active_drawer = None;
         } else {
             self.active_drawer = Some(tab);
+            if tab == RightDrawerTab::Git {
+                self.autosave_saved_tabs(cx);
+                self.pick_default_git_target_if_unset();
+                self.refresh_all_git_statuses();
+            }
         }
         cx.notify();
     }
@@ -1606,6 +1746,7 @@ impl Workspace {
         }
         if changed {
             self.store.save_all_collections(&self.collections);
+            self.refresh_all_git_statuses();
         }
     }
 
@@ -1682,22 +1823,95 @@ impl Workspace {
         cx.notify();
     }
 
-    pub fn open_folder_git_settings(
-        &mut self,
-        folder_id: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.git_target_folder_id = Some(folder_id.to_string());
+    pub fn open_git_drawer(&mut self, folder_id: Option<String>, cx: &mut Context<Self>) {
+        self.autosave_saved_tabs(cx);
+        if let Some(fid) = folder_id {
+            self.git_target_folder_id = Some(fid);
+        } else {
+            self.pick_default_git_target_if_unset();
+        }
+        self.git_selected_change = None;
         self.git_notice = None;
-        self.open_settings(SettingsCategory::WorkspaceGit, window, cx);
+        self.active_drawer = Some(RightDrawerTab::Git);
+        self.refresh_all_git_statuses();
+        cx.notify();
+    }
+
+    pub fn open_folder_git_drawer(&mut self, folder_id: &str, cx: &mut Context<Self>) {
+        self.open_git_drawer(Some(folder_id.to_string()), cx);
+    }
+
+    pub fn init_folder_git_now(&mut self, folder_id: &str, cx: &mut Context<Self>) {
+        self.git_target_folder_id = Some(folder_id.to_string());
+        self.git_selected_change = None;
+        self.active_drawer = Some(RightDrawerTab::Git);
+        self.git_init_workspace(cx);
+    }
+
+    fn pick_default_git_target_if_unset(&mut self) {
+        if self.git_target_folder_id.is_some() {
+            return;
+        }
+        if let Some(saved_id) = self
+            .active_tab()
+            .and_then(|t| t.saved_request_id.as_deref())
+            && let Some(folder) = self.collections.iter().find(|f| {
+                f.disk_path.is_some() && f.requests.iter().any(|r| r.id == saved_id)
+            })
+        {
+            self.git_target_folder_id = Some(folder.id.clone());
+            return;
+        }
+        let personal_is_repo = git::inspect_repo(self.store.workspace_dir()).is_repo;
+        if !personal_is_repo {
+            if let Some(folder) = self.collections.iter().find(|f| {
+                f.disk_path.is_some()
+                    && self
+                        .folder_git_statuses
+                        .get(&f.id)
+                        .is_some_and(|s| s.is_repo)
+            }) {
+                self.git_target_folder_id = Some(folder.id.clone());
+                return;
+            }
+            if let Some(folder) = self.collections.iter().find(|f| f.disk_path.is_some()) {
+                self.git_target_folder_id = Some(folder.id.clone());
+            }
+        }
     }
 
     pub fn select_git_target(&mut self, folder_id: Option<String>, cx: &mut Context<Self>) {
         self.git_target_folder_id = folder_id;
+        self.git_selected_change = None;
         self.git_notice = None;
         self.refresh_all_git_statuses();
         cx.notify();
+    }
+
+    pub fn select_git_change(&mut self, repo_path: String, cx: &mut Context<Self>) {
+        self.git_selected_change = Some(repo_path);
+        self.sync_selected_git_diff();
+        cx.notify();
+    }
+
+    pub fn request_discard_git_change(&mut self, file: git::GitFileChange, cx: &mut Context<Self>) {
+        let Some(repo_root) = self.git_details.repo_root.clone() else {
+            return;
+        };
+        self.pending_confirm = Some(PendingConfirm::DiscardGitChange {
+            repo_root,
+            file,
+            has_head: self.git_details.has_head,
+        });
+        cx.notify();
+    }
+
+    pub fn has_pending_git_changes(&self) -> bool {
+        (self.git_status.is_repo && self.git_status.changed_files > 0)
+            || self
+                .folder_git_statuses
+                .values()
+                .any(|s| s.is_repo && s.changed_files > 0)
     }
 
     pub fn active_git_linked_folder(&self) -> Option<&CollectionFolder> {
@@ -1711,6 +1925,34 @@ impl Workspace {
         self.active_git_linked_folder()
             .and_then(|f| f.disk_path.clone())
             .unwrap_or_else(|| self.store.workspace_dir().to_path_buf())
+    }
+
+    fn sync_selected_git_diff(&mut self) {
+        let target = self
+            .git_selected_change
+            .as_deref()
+            .and_then(|sel| self.git_details.changes.iter().find(|c| c.repo_path == sel))
+            .or_else(|| self.git_details.changes.first())
+            .cloned();
+
+        match (target, self.git_details.repo_root.as_deref()) {
+            (Some(file), Some(root)) => {
+                self.git_selected_change = Some(file.repo_path.clone());
+                self.git_diff_lines = git::read_file_diff(root, &file, self.git_details.has_head);
+            }
+            _ => {
+                self.git_selected_change = None;
+                self.git_diff_lines.clear();
+            }
+        }
+    }
+
+    fn refresh_active_git_details(&mut self) {
+        let is_linked = self.active_git_linked_folder().is_some();
+        let dir = self.active_git_target_dir();
+        self.git_details = git::inspect_repo_details(&dir, is_linked);
+        self.git_status = self.git_details.status.clone();
+        self.sync_selected_git_diff();
     }
 
     fn refresh_folder_git_if_linked(&mut self, folder_id: &str) {
@@ -1727,6 +1969,9 @@ impl Workspace {
                 self.git_status = status;
             }
         }
+        if self.active_drawer == Some(RightDrawerTab::Git) {
+            self.refresh_active_git_details();
+        }
     }
 
     fn refresh_all_git_statuses(&mut self) {
@@ -1734,11 +1979,18 @@ impl Workspace {
         if let Some(fid) = self.git_target_folder_id.clone() {
             if let Some(status) = self.folder_git_statuses.get(&fid) {
                 self.git_status = status.clone();
+                if self.active_drawer == Some(RightDrawerTab::Git) {
+                    self.refresh_active_git_details();
+                }
                 return;
             }
             self.git_target_folder_id = None;
         }
-        self.git_status = git::inspect_repo(self.store.workspace_dir());
+        if self.active_drawer == Some(RightDrawerTab::Git) {
+            self.refresh_active_git_details();
+        } else {
+            self.git_status = git::inspect_repo(self.store.workspace_dir());
+        }
     }
 
     pub fn close_settings(&mut self, cx: &mut Context<Self>) {
@@ -1955,6 +2207,7 @@ impl Workspace {
                     match res {
                         Ok(msg) => {
                             this.reload_or_seed_workspace(window, cx);
+                            this.sync_open_saved_tabs_after_reload(window, cx);
                             this.git_notice = Some(if msg.is_empty() {
                                 "Pulled latest changes.".to_string()
                             } else {
