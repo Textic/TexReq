@@ -66,6 +66,11 @@ pub enum PendingConfirm {
     ClearHistory,
     DeleteFolder { id: String, name: String, count: usize },
     UnlinkFolder { id: String, name: String, path: String },
+    DiscardGitChange {
+        repo_root: std::path::PathBuf,
+        file: crate::storage::git::GitFileChange,
+        has_head: bool,
+    },
 }
 
 impl PendingConfirm {
@@ -75,6 +80,13 @@ impl PendingConfirm {
             Self::ClearHistory => "Clear History",
             Self::DeleteFolder { .. } => "Delete Folder",
             Self::UnlinkFolder { .. } => "Unlink Linked Folder",
+            Self::DiscardGitChange { file, .. } => {
+                if file.kind == crate::storage::git::GitChangeKind::Untracked {
+                    "Delete Untracked File"
+                } else {
+                    "Discard File Changes"
+                }
+            }
         }
     }
 
@@ -92,6 +104,19 @@ impl PendingConfirm {
             Self::UnlinkFolder { name, path, .. } => format!(
                 "Remove linked folder \"{name}\" from TexReq? Files on disk at \"{path}\" will not be deleted."
             ),
+            Self::DiscardGitChange { file, .. } => {
+                if file.kind == crate::storage::git::GitChangeKind::Untracked {
+                    format!(
+                        "Delete untracked file \"{}\" from disk? This cannot be undone.",
+                        file.display_path
+                    )
+                } else {
+                    format!(
+                        "Discard uncommitted changes in \"{}\"? This restores the file to HEAD.",
+                        file.display_path
+                    )
+                }
+            }
         }
     }
 
@@ -100,6 +125,13 @@ impl PendingConfirm {
             Self::DeleteEnvironment { .. } | Self::DeleteFolder { .. } => "Delete",
             Self::ClearHistory => "Clear History",
             Self::UnlinkFolder { .. } => "Unlink",
+            Self::DiscardGitChange { file, .. } => {
+                if file.kind == crate::storage::git::GitChangeKind::Untracked {
+                    "Delete File"
+                } else {
+                    "Discard"
+                }
+            }
         }
     }
 }
@@ -843,6 +875,17 @@ fn render_workspace_git_pane(ws: &Workspace, cx: &mut Context<Workspace>) -> imp
                                     .tooltip("Refresh Git status")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.refresh_git_status(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("set-open-git-drawer")
+                                    .with_size(Size::XSmall)
+                                    .secondary()
+                                    .label("Inspect Changes...")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.show_settings_modal = false;
+                                        let target = this.git_target_folder_id.clone();
+                                        this.open_git_drawer(target, cx);
                                     })),
                             ),
                     )

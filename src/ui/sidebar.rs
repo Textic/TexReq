@@ -1,5 +1,6 @@
 use gpui_kit::{
     Context, SharedString, Window, WindowControlArea,
+    assets::IconName as AssetIconName,
     component::{
         Icon, IconName, Sizable as _, Size, StyledExt as _,
         button::{Button, ButtonVariants as _},
@@ -262,6 +263,7 @@ fn render_collections_list(
             let folder_id_add = folder.id.clone();
             let folder_id_del = folder.id.clone();
             let folder_id_git = folder.id.clone();
+            let folder_id_make_git = folder.id.clone();
             let is_linked = folder.disk_path.is_some();
             let git_pill = if is_linked {
                 match ws.folder_git_statuses.get(&folder.id) {
@@ -271,12 +273,18 @@ fn render_collections_list(
                         } else {
                             info.branch.clone()
                         };
-                        Some((label, COLOR_GET, "Git repository — click to commit/pull/push"))
+                        Some((
+                            label,
+                            COLOR_GET,
+                            "Git repository — click to inspect changes, commit, pull, or push",
+                            true,
+                        ))
                     }
                     _ => Some((
-                        "Disk".to_string(),
-                        TEXT_MUTED,
-                        "Linked disk folder (no Git) — click to manage or initialize Git",
+                        "+ Git".to_string(),
+                        ACCENT_BLUE,
+                        "Initialize Git repository in 1 click & open Git panel",
+                        false,
                     )),
                 }
             } else {
@@ -346,7 +354,7 @@ fn render_collections_list(
                                 .text_color(solid(TEXT_PRIMARY))
                                 .child(SharedString::from(folder.name.clone())),
                         )
-                        .when_some(git_pill, |row, (pill_text, pill_color, pill_tip)| {
+                        .when_some(git_pill, |row, (pill_text, pill_color, pill_tip, is_repo)| {
                             row.child(
                                 Button::new(("folder-git", f_ix))
                                     .with_size(Size::XSmall)
@@ -364,10 +372,27 @@ fn render_collections_list(
                                             .text_color(solid(pill_color))
                                             .child(SharedString::from(pill_text)),
                                     )
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        if is_repo {
+                                            this.open_folder_git_drawer(&folder_id_git, cx);
+                                        } else {
+                                            this.init_folder_git_now(&folder_id_git, cx);
+                                        }
+                                    })),
+                            )
+                        })
+                        .when(!is_linked, |row| {
+                            row.child(
+                                Button::new(("folder-make-git", f_ix))
+                                    .with_size(Size::XSmall)
+                                    .ghost()
+                                    .icon(AssetIconName::FolderGit2)
+                                    .tooltip("Save folder to disk & initialize Git")
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         cx.stop_propagation();
-                                        this.open_folder_git_settings(
-                                            &folder_id_git,
+                                        this.make_folder_git_dialog(
+                                            &folder_id_make_git,
                                             window,
                                             cx,
                                         );

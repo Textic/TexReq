@@ -14,6 +14,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
   prepare:
@@ -89,15 +90,19 @@ jobs:
           - name: windows-x86_64
             os: windows
             runner: windows-latest
-            targets: x86_64-pc-windows-msvc
+            target: x86_64-pc-windows-msvc
           - name: linux-x86_64
             os: linux
             runner: ubuntu-latest
-            targets: x86_64-unknown-linux-gnu
-          - name: macos-arm64-x64
+            target: x86_64-unknown-linux-gnu
+          - name: macos-arm64
+            os: macos
+            runner: macos-latest
+            target: aarch64-apple-darwin
+          - name: macos-x86_64
             os: macos
             runner: macos-15-intel
-            targets: x86_64-apple-darwin aarch64-apple-darwin
+            target: x86_64-apple-darwin
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -116,12 +121,24 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.targets }}
+          targets: ${{ matrix.target }}
 
-      - name: Restore Cargo cache
+      - name: Setup sccache (Unix)
+        if: matrix.os != 'windows'
+        uses: mozilla-actions/sccache-action@v0.0.11
+
+      - name: Enable sccache env (Unix)
+        if: matrix.os != 'windows'
+        run: |
+          echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+
+      - name: Restore Cargo cache (Windows)
+        if: matrix.os == 'windows'
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.name }}
+          key: windows-x86_64
 
       - name: Sync build version in runner Cargo.toml (Windows)
         if: matrix.os == 'windows' && needs.prepare.outputs.version != needs.prepare.outputs.cargo_version
@@ -140,10 +157,10 @@ jobs:
         if: matrix.os == 'windows'
         shell: pwsh
         run: |
-          cargo test --target x86_64-pc-windows-msvc
-          cargo build --release --target x86_64-pc-windows-msvc
+          cargo test --target ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }}
           & .\packaging\windows\build-setup.ps1 `
-            -BinaryPath "target\x86_64-pc-windows-msvc\release\texreq.exe" `
+            -BinaryPath "target\${{ matrix.target }}\release\texreq.exe" `
             -Version "${{ needs.prepare.outputs.version }}" `
             -Tag "${{ needs.prepare.outputs.tag }}" `
             -OutDir "dist"
@@ -151,10 +168,10 @@ jobs:
       - name: Test, build & package Linux .deb + tarball
         if: matrix.os == 'linux'
         run: |
-          cargo test --target x86_64-unknown-linux-gnu
-          cargo build --release --target x86_64-unknown-linux-gnu
+          cargo test --target ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }}
           bash packaging/linux/build-deb.sh \
-            "target/x86_64-unknown-linux-gnu/release/texreq" \
+            "target/${{ matrix.target }}/release/texreq" \
             "${{ needs.prepare.outputs.version }}" \
             "${{ needs.prepare.outputs.tag }}" \
             "dist"
@@ -162,20 +179,13 @@ jobs:
       - name: Test, build & package macOS .dmg + .zip
         if: matrix.os == 'macos'
         run: |
-          cargo test --target x86_64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
-          cargo build --release --target aarch64-apple-darwin
+          cargo test --target ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }}
           bash packaging/macos/build-dmg.sh \
-            "target/aarch64-apple-darwin/release/texreq" \
+            "target/${{ matrix.target }}/release/texreq" \
             "${{ needs.prepare.outputs.version }}" \
             "${{ needs.prepare.outputs.tag }}" \
-            "macos-arm64" \
-            "dist"
-          bash packaging/macos/build-dmg.sh \
-            "target/x86_64-apple-darwin/release/texreq" \
-            "${{ needs.prepare.outputs.version }}" \
-            "${{ needs.prepare.outputs.tag }}" \
-            "macos-x86_64" \
+            "${{ matrix.name }}" \
             "dist"
 
       - name: Upload build artifacts

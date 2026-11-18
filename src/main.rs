@@ -9,12 +9,17 @@ mod ui;
 
 use std::borrow::Cow;
 
-use gpui_kit::{assets::Assets, *};
+use gpui_kit::{
+    assets::{Assets, icon_assets},
+    *,
+};
 
 use crate::ui::workspace::{
     FocusSearch, FocusUrl, FormatJson, NewTab, Quit, SaveRequest, SendRequest, ToggleSidebar,
     Workspace,
 };
+
+icon_assets!(GitExtraAssets, [GitBranch, FolderGit2, GitCommitVertical, Undo]);
 
 struct TexReqAssets;
 
@@ -23,11 +28,16 @@ impl AssetSource for TexReqAssets {
         if path == "icons/texreq.png" {
             return Ok(Some(Cow::Borrowed(include_bytes!("../assets/texreq.png"))));
         }
+        if let Some(asset) = GitExtraAssets.load(path)? {
+            return Ok(Some(asset));
+        }
         Assets.load(path)
     }
 
     fn list(&self, path: &str) -> gpui_kit::Result<Vec<SharedString>> {
-        Assets.list(path)
+        let mut items = Assets.list(path)?;
+        items.extend(GitExtraAssets.list(path)?);
+        Ok(items)
     }
 }
 
