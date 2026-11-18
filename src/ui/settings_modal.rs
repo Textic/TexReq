@@ -64,6 +64,8 @@ impl SettingsCategory {
 pub enum PendingConfirm {
     DeleteEnvironment { id: String, name: String },
     ClearHistory,
+    DeleteFolder { id: String, name: String, count: usize },
+    UnlinkFolder { id: String, name: String, path: String },
 }
 
 impl PendingConfirm {
@@ -71,6 +73,8 @@ impl PendingConfirm {
         match self {
             Self::DeleteEnvironment { .. } => "Delete Environment",
             Self::ClearHistory => "Clear History",
+            Self::DeleteFolder { .. } => "Delete Folder",
+            Self::UnlinkFolder { .. } => "Unlink Linked Folder",
         }
     }
 
@@ -82,13 +86,20 @@ impl PendingConfirm {
             Self::ClearHistory => {
                 "Are you sure you want to clear all request history? Unsaved requests in your history cannot be recovered.".to_string()
             }
+            Self::DeleteFolder { name, count, .. } => format!(
+                "Delete \"{name}\" and its {count} saved request(s)? This cannot be undone."
+            ),
+            Self::UnlinkFolder { name, path, .. } => format!(
+                "Remove linked folder \"{name}\" from TexReq? Files on disk at \"{path}\" will not be deleted."
+            ),
         }
     }
 
     pub fn confirm_label(&self) -> &'static str {
         match self {
-            Self::DeleteEnvironment { .. } => "Delete",
+            Self::DeleteEnvironment { .. } | Self::DeleteFolder { .. } => "Delete",
             Self::ClearHistory => "Clear History",
+            Self::UnlinkFolder { .. } => "Unlink",
         }
     }
 }
@@ -544,19 +555,103 @@ fn render_network_pane(ws: &Workspace, cx: &mut Context<Workspace>) -> impl Into
 }
 
 fn render_workspace_git_pane(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
-    let workspace_path = ws.store.workspace_dir().to_string_lossy().to_string();
+    let selected_linked = ws.active_git_linked_folder();
+    let target_title = selected_linked
+        .map(|f| f.name.clone())
+        .unwrap_or_else(|| "Personal Workspace".to_string());
+    let target_path = ws.active_git_target_dir().to_string_lossy().to_string();
     let git = &ws.git_status;
+
+    let linked_folders: Vec<_> = ws
+        .collections
+        .iter()
+        .filter(|f| f.disk_path.is_some())
+        .collect();
+
+    let mut target_items = Vec::with_capacity(1 + linked_folders.len());
+    let personal_selected = ws.git_target_folder_id.is_none();
+    target_items.push(render_git_target_row(
+        "git-target-personal",
+        0,
+        "Personal Workspace",
+        &ws.store.workspace_dir().to_string_lossy(),
+        None,
+        personal_selected,
+        None,
+        cx,
+    ));
+    for (ix, folder) in linked_folders.iter().enumerate() {
+        let fid = folder.id.clone();
+        let selected = ws.git_target_folder_id.as_deref() == Some(fid.as_str());
+        let path_str = folder
+            .disk_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let status_info = ws.folder_git_statuses.get(&fid);
+        target_items.push(render_git_target_row(
+            "git-target-linked",
+            ix + 1,
+            &folder.name,
+            &path_str,
+            Some(fid),
+            selected,
+            status_info,
+            cx,
+        ));
+    }
 
     v_flex()
         .w_full()
         .gap_3()
         .child(
-            section_card("Workspace Directory")
+            v_flex()
+                .w_full()
+                .p_3()
+                .gap_2()
+                .bg(solid(BG_ELEVATED))
+                .border_1()
+                .border_color(solid(BORDER_SUBTLE))
+                .rounded(px(RADIUS_ROW))
+                .child(
+                    h_flex()
+                        .w_full()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_semibold()
+                                .text_color(solid(TEXT_MUTED))
+                                .child("Folders & Repositories"),
+                        )
+                        .child(
+                            Button::new("set-link-folder")
+                                .with_size(Size::XSmall)
+                                .secondary()
+                                .icon(IconName::FolderOpen)
+                                .label("Link Folder...")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.link_collection_folder_dialog(window, cx);
+                                })),
+                        ),
+                )
                 .child(
                     div()
                         .text_xs()
                         .text_color(solid(TEXT_MUTED))
-                        .child("Collections and environments are stored here for version control."),
+                        .child("Keep personal requests local without Git, or link disk folders that store their own collection.json and optional Git repo."),
+                )
+                .children(target_items),
+        )
+        .child(if let Some(folder) = selected_linked {
+            let folder_id_unlink = folder.id.clone();
+            section_card("Linked Collection Folder")
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(solid(TEXT_MUTED))
+                        .child("Requests in this folder are stored independently in collection.json inside this path."),
                 )
                 .child(
                     div()
@@ -568,7 +663,40 @@ fn render_workspace_git_pane(ws: &Workspace, cx: &mut Context<Workspace>) -> imp
                         .rounded(px(RADIUS_CONTROL))
                         .text_xs()
                         .text_color(solid(TEXT_PRIMARY))
-                        .child(SharedString::from(workspace_path)),
+                        .child(SharedString::from(target_path)),
+                )
+                .child(
+                    h_flex().justify_end().child(
+                        Button::new("set-unlink-folder")
+                            .with_size(Size::XSmall)
+                            .ghost()
+                            .icon(IconName::Delete)
+                            .label("Unlink Folder")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.request_remove_folder(&folder_id_unlink, cx);
+                            })),
+                    ),
+                )
+                .into_any_element()
+        } else {
+            section_card("Personal Workspace Directory")
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(solid(TEXT_MUTED))
+                        .child("Collections and environments are stored here by default."),
+                )
+                .child(
+                    div()
+                        .px_2p5()
+                        .py_1p5()
+                        .bg(solid(BG_SURFACE))
+                        .border_1()
+                        .border_color(solid(BORDER_SUBTLE))
+                        .rounded(px(RADIUS_CONTROL))
+                        .text_xs()
+                        .text_color(solid(TEXT_PRIMARY))
+                        .child(SharedString::from(target_path)),
                 )
                 .child(
                     h_flex()
@@ -592,10 +720,11 @@ fn render_workspace_git_pane(ws: &Workspace, cx: &mut Context<Workspace>) -> imp
                                     this.reset_workspace_folder(window, cx);
                                 })),
                         ),
-                ),
-        )
+                )
+                .into_any_element()
+        })
         .child(
-            section_card("Git Sync")
+            section_card(&format!("Git Sync · {target_title}"))
                 .when(!git.git_available, |el| {
                     el.child(
                         div()
@@ -719,6 +848,94 @@ fn render_workspace_git_pane(ws: &Workspace, cx: &mut Context<Workspace>) -> imp
                     )
                 })
                 .when_some(ws.git_notice.clone(), |el, notice| el.child(notice_box(notice))),
+        )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_git_target_row(
+    id_prefix: &'static str,
+    ix: usize,
+    name: &str,
+    path: &str,
+    folder_id: Option<String>,
+    selected: bool,
+    status: Option<&crate::storage::git::GitStatusInfo>,
+    cx: &mut Context<Workspace>,
+) -> impl IntoElement + use<> {
+    let badge = match status {
+        Some(info) if info.is_repo => {
+            if info.changed_files > 0 {
+                (
+                    format!("{} *{}", info.branch, info.changed_files),
+                    COLOR_POST,
+                )
+            } else {
+                (info.branch.clone(), COLOR_GET)
+            }
+        }
+        Some(_) => ("No Git".to_string(), TEXT_MUTED),
+        None => ("Default".to_string(), TEXT_MUTED),
+    };
+
+    h_flex()
+        .id((id_prefix, ix))
+        .w_full()
+        .px_2p5()
+        .py_2()
+        .gap_2()
+        .items_center()
+        .justify_between()
+        .cursor_pointer()
+        .rounded(px(RADIUS_CONTROL))
+        .bg(if selected {
+            solid(BG_HOVER)
+        } else {
+            solid(BG_SURFACE)
+        })
+        .border_1()
+        .border_color(if selected {
+            solid(ACCENT_BLUE)
+        } else {
+            solid(BORDER_SUBTLE)
+        })
+        .hover(|s| s.bg(solid(BG_HOVER)))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.select_git_target(folder_id.clone(), cx);
+        }))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(solid(TEXT_PRIMARY))
+                        .truncate()
+                        .child(SharedString::from(name.to_string())),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(solid(TEXT_MUTED))
+                        .truncate()
+                        .child(SharedString::from(path.to_string())),
+                ),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .px_1p5()
+                .py_0p5()
+                .rounded(px(3.))
+                .bg(solid(BG_ELEVATED))
+                .border_1()
+                .border_color(solid(BORDER_SUBTLE))
+                .text_xs()
+                .font_medium()
+                .text_color(solid(badge.1))
+                .child(SharedString::from(badge.0)),
         )
 }
 

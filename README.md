@@ -19,11 +19,11 @@ Designed around a flat dark interface with crisp `1px` structural panel cuts, ze
 - **Centered Modal Settings, Git Workspace & Auto-Updater**:
   - Clean categorized Settings modal (`General`, `Network & SSL`, `Workspace & Git`, `MCP Server`, `Info`).
   - Toggle auto-save, JSON auto-formatting, global SSL/TLS verification, default redirects, timeout, and proxy settings.
-  - Choose any local workspace directory for storing `collections.json` and `environments.toml` with built-in Git support (`init`, `commit`, `pull`, `push`).
+  - Choose any local workspace directory or link independent disk folders in the sidebar, each with automatic Git status detection (`init`, `commit`, `pull`, `push`).
   - Built-in update checker (checks GitHub Releases on launch and on demand under **Settings -> Info**).
 - **Built-in MCP Server (`--mcp`)**:
   - Run `texreq --mcp` over `stdio` JSON-RPC 2.0 so AI agents can list/inspect collections and environments, execute HTTP/SSE/WebSocket requests, generate snippets, and manage saved requests.
-  - One-click client installation inside **Settings -> MCP Server** for **Anthropic (Claude Desktop & Claude Code CLI)**, **Antigravity**, and **OpenAI (Codex CLI)**, plus a copyable generic JSON block and security guards (`Mask secrets`, `Read-only mode`).
+  - One-click client installation inside **Settings -> MCP Server** for **Claude Desktop**, **Claude Code CLI**, **Antigravity**, and **Codex CLI**, plus a copyable generic JSON block and security guards (`Mask secrets`, `Read-only mode`).
 
 ## Installation
 

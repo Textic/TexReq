@@ -443,7 +443,7 @@ fn read_resource(uri: &str, source: &McpStoreSource) -> Result<String, String> {
     let (store, settings) = source.open();
     match uri {
         "texreq://collections" => {
-            let collections = store.load_collections();
+            let collections = store.load_all_collections(&settings.linked_folders);
             let mut folders = Vec::new();
             let mut requests = Vec::new();
             collect_collection_tree(&collections, "", None, &mut folders, &mut requests);
@@ -494,8 +494,8 @@ fn tool_list_collections(args: &Value, source: &McpStoreSource) -> Result<Value,
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let (store, _) = source.open();
-    let collections = store.load_collections();
+    let (store, settings) = source.open();
+    let collections = store.load_all_collections(&settings.linked_folders);
     let mut folders = Vec::new();
     let mut requests = Vec::new();
     collect_collection_tree(&collections, "", query, &mut folders, &mut requests);
@@ -515,7 +515,7 @@ fn tool_get_request(args: &Value, source: &McpStoreSource) -> Result<Value, Tool
     }
 
     let (store, settings) = source.open();
-    let collections = store.load_collections();
+    let collections = store.load_all_collections(&settings.linked_folders);
     let (folder_path, req) = find_saved_request(&collections, id, name)
         .ok_or_else(|| ToolFailure::Execution("Saved request not found.".to_string()))?;
 
@@ -615,7 +615,7 @@ fn tool_run_saved_request(args: &Value, source: &McpStoreSource) -> Result<Value
     let max_body_bytes = parse_max_body_bytes(args);
 
     let (store, settings) = source.open();
-    let collections = store.load_collections();
+    let collections = store.load_all_collections(&settings.linked_folders);
     let (_, req) = find_saved_request(&collections, id, name)
         .ok_or_else(|| ToolFailure::Execution("Saved request not found.".to_string()))?;
 
@@ -705,7 +705,7 @@ fn tool_test_websocket_once(args: &Value, source: &McpStoreSource) -> Result<Val
         .filter(|s| !s.is_empty());
 
     let mut req = if let Some(id) = request_id {
-        let collections = store.load_collections();
+        let collections = store.load_all_collections(&settings.linked_folders);
         let (_, saved) = find_saved_request(&collections, Some(id), None)
             .ok_or_else(|| ToolFailure::Execution("Saved WebSocket request not found.".to_string()))?;
         let mut cloned = saved.clone();
@@ -871,7 +871,7 @@ fn tool_save_request(args: &Value, source: &McpStoreSource) -> Result<Value, Too
     let params = parse_kv_object(args.get("params"))?;
     let body = parse_body_from_args(args)?;
 
-    let mut collections = store.load_collections();
+    let mut collections = store.load_all_collections(&settings.linked_folders);
     if let Some(existing_id) = args
         .get("id")
         .and_then(Value::as_str)
@@ -894,7 +894,7 @@ fn tool_save_request(args: &Value, source: &McpStoreSource) -> Result<Value, Too
                 req.body = body;
             }
             let saved_id = req.id.clone();
-            store.save_collections(&collections);
+            store.save_all_collections(&collections);
             return Ok(json!({
                 "saved": true,
                 "created": false,
@@ -948,7 +948,7 @@ fn tool_save_request(args: &Value, source: &McpStoreSource) -> Result<Value, Too
         }
     };
 
-    store.save_collections(&collections);
+    store.save_all_collections(&collections);
     Ok(json!({
         "saved": true,
         "created": true,
@@ -979,7 +979,7 @@ fn tool_create_folder(args: &Value, source: &McpStoreSource) -> Result<Value, To
     let folder = CollectionFolder::new(name);
     let created_id = folder.id.clone();
     let created_name = folder.name.clone();
-    let mut collections = store.load_collections();
+    let mut collections = store.load_all_collections(&settings.linked_folders);
 
     if let Some(pid) = parent_id.as_deref() {
         let parent = find_folder_by_id_mut(&mut collections, pid).ok_or_else(|| {
@@ -991,7 +991,7 @@ fn tool_create_folder(args: &Value, source: &McpStoreSource) -> Result<Value, To
         collections.push(folder);
     }
 
-    store.save_collections(&collections);
+    store.save_all_collections(&collections);
     Ok(json!({
         "id": created_id,
         "name": created_name,
@@ -1074,7 +1074,7 @@ fn tool_generate_snippet(args: &Value, source: &McpStoreSource) -> Result<Value,
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        let collections = store.load_collections();
+        let collections = store.load_all_collections(&settings.linked_folders);
         let (_, saved) = find_saved_request(&collections, Some(req_id), None)
             .ok_or_else(|| ToolFailure::Execution("Saved request not found.".to_string()))?;
         let mut cloned = saved.clone();

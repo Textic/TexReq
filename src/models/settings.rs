@@ -20,6 +20,8 @@ pub struct AppSettings {
     pub mcp_mask_secrets: bool,
     #[serde(default)]
     pub mcp_read_only: bool,
+    #[serde(default)]
+    pub linked_folders: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -42,6 +44,7 @@ impl Default for AppSettings {
             auto_format_json: true,
             mcp_mask_secrets: true,
             mcp_read_only: false,
+            linked_folders: Vec::new(),
         }
     }
 }

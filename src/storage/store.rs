@@ -95,6 +95,79 @@ impl LocalStore {
         }
     }
 
+    pub fn load_linked_folder(&self, dir: &Path) -> Result<CollectionFolder, String> {
+        if !dir.exists() {
+            fs::create_dir_all(dir).map_err(|e| format!("Failed to access folder {}: {e}", dir.display()))?;
+        }
+        let col_file = dir.join("collection.json");
+        if col_file.exists() {
+            let raw = fs::read_to_string(&col_file)
+                .map_err(|e| format!("Failed to read {}: {e}", col_file.display()))?;
+            let mut folder = serde_json::from_str::<CollectionFolder>(&raw)
+                .map_err(|e| format!("Invalid collection.json in {}: {e}", dir.display()))?;
+            folder.disk_path = Some(dir.to_path_buf());
+            return Ok(folder);
+        }
+
+        let name = dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Linked Folder");
+        let mut folder = CollectionFolder::new(name);
+        folder.disk_path = Some(dir.to_path_buf());
+        self.save_linked_folder(&folder)?;
+        Ok(folder)
+    }
+
+    pub fn save_linked_folder(&self, folder: &CollectionFolder) -> Result<(), String> {
+        let Some(dir) = folder.disk_path.as_ref() else {
+            return Ok(());
+        };
+        let path = dir.join("collection.json");
+        let json = serde_json::to_string_pretty(folder)
+            .map_err(|e| format!("Failed to serialize folder: {e}"))?;
+        write_atomic(&path, json.as_bytes())
+            .map_err(|e| format!("Failed to write {}: {e}", path.display()))
+    }
+
+    pub fn load_all_collections(&self, linked_dirs: &[String]) -> Vec<CollectionFolder> {
+        let mut all = self.load_collections();
+        for f in &mut all {
+            f.disk_path = None;
+        }
+        let mut seen = Vec::<PathBuf>::new();
+        for raw in linked_dirs {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let dir = PathBuf::from(trimmed);
+            let canonical = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+            if seen.iter().any(|p| p == &canonical) {
+                continue;
+            }
+            seen.push(canonical);
+            if let Ok(folder) = self.load_linked_folder(&dir) {
+                all.push(folder);
+            }
+        }
+        all
+    }
+
+    pub fn save_all_collections(&self, collections: &[CollectionFolder]) {
+        let personal: Vec<CollectionFolder> = collections
+            .iter()
+            .filter(|f| f.disk_path.is_none())
+            .cloned()
+            .collect();
+        self.save_collections(&personal);
+        for folder in collections.iter().filter(|f| f.disk_path.is_some()) {
+            let _ = self.save_linked_folder(folder);
+        }
+    }
+
     pub fn load_history(&self) -> Vec<HistoryEntry> {
         let path = self.config_dir.join("history.json");
         if let Ok(raw) = fs::read_to_string(&path)
@@ -197,6 +270,21 @@ mod tests {
 
         store.set_workspace_dir(Some(temp_dir.join("ws")));
         assert!(store.workspace_dir().ends_with("ws"));
+
+        let linked_dir = temp_dir.join("repo-api");
+        fs::create_dir_all(&linked_dir).unwrap();
+        let mut linked = store.load_linked_folder(&linked_dir).unwrap();
+        assert_eq!(linked.name, "repo-api");
+        linked.requests.push(crate::models::RequestItem::default());
+        store.save_all_collections(&[CollectionFolder::new("Personal"), linked]);
+
+        let linked_setting = vec![linked_dir.to_string_lossy().to_string()];
+        let all = store.load_all_collections(&linked_setting);
+        assert_eq!(all.len(), 2);
+        assert!(all[0].disk_path.is_none());
+        assert!(all[1].disk_path.is_some());
+        assert_eq!(all[1].requests.len(), 1);
+        assert_eq!(store.load_collections().len(), 1);
 
         let _ = fs::remove_dir_all(temp_dir);
     }

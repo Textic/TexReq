@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -11,6 +13,8 @@ pub struct CollectionFolder {
     pub requests: Vec<RequestItem>,
     #[serde(default)]
     pub subfolders: Vec<CollectionFolder>,
+    #[serde(skip)]
+    pub disk_path: Option<PathBuf>,
 }
 
 impl CollectionFolder {
@@ -21,6 +25,7 @@ impl CollectionFolder {
             expanded: true,
             requests: Vec::new(),
             subfolders: Vec::new(),
+            disk_path: None,
         }
     }
 }

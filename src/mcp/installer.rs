@@ -6,7 +6,7 @@ pub enum McpClient {
     ClaudeDesktop,
     ClaudeCode,
     Antigravity,
-    OpenAiCodex,
+    CodexCli,
 }
 
 impl McpClient {
@@ -14,21 +14,21 @@ impl McpClient {
         Self::ClaudeDesktop,
         Self::ClaudeCode,
         Self::Antigravity,
-        Self::OpenAiCodex,
+        Self::CodexCli,
     ];
 
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::ClaudeDesktop => "Claude Desktop (Anthropic)",
-            Self::ClaudeCode => "Claude Code CLI (Anthropic)",
-            Self::Antigravity => "Antigravity (Google)",
-            Self::OpenAiCodex => "Codex CLI (OpenAI)",
+            Self::ClaudeDesktop => "Claude Desktop",
+            Self::ClaudeCode => "Claude Code CLI",
+            Self::Antigravity => "Antigravity",
+            Self::CodexCli => "Codex CLI",
         }
     }
 
     pub fn format_label(self) -> &'static str {
         match self {
-            Self::OpenAiCodex => "TOML",
+            Self::CodexCli => "TOML",
             _ => "JSON",
         }
     }
@@ -66,7 +66,7 @@ pub fn client_config_path(client: McpClient) -> Option<PathBuf> {
         McpClient::Antigravity => {
             dirs::home_dir().map(|h| h.join(".gemini").join("config").join("mcp_config.json"))
         }
-        McpClient::OpenAiCodex => {
+        McpClient::CodexCli => {
             if let Some(codex_home) = std::env::var_os("CODEX_HOME")
                 && !codex_home.is_empty()
             {
@@ -121,7 +121,7 @@ fn inspect_client_at(client: McpClient, cfg_path: &Path, command: &str) -> McpCl
     };
 
     let (installed, matches_command) = match client {
-        McpClient::OpenAiCodex => inspect_toml_entry(&raw, command),
+        McpClient::CodexCli => inspect_toml_entry(&raw, command),
         _ => inspect_json_entry(&raw, command),
     };
 
@@ -191,7 +191,7 @@ pub fn uninstall_client(client: McpClient) -> Result<String, String> {
 
 fn install_client_at(client: McpClient, path: &Path, command: &str) -> Result<(), String> {
     match client {
-        McpClient::OpenAiCodex => update_toml_file(path, Some(command)),
+        McpClient::CodexCli => update_toml_file(path, Some(command)),
         _ => update_json_file(path, Some(command)),
     }
 }
@@ -201,7 +201,7 @@ fn uninstall_client_at(client: McpClient, path: &Path) -> Result<(), String> {
         return Ok(());
     }
     match client {
-        McpClient::OpenAiCodex => update_toml_file(path, None),
+        McpClient::CodexCli => update_toml_file(path, None),
         _ => update_json_file(path, None),
     }
 }
@@ -345,8 +345,8 @@ mod tests {
         )
         .unwrap();
 
-        install_client_at(McpClient::OpenAiCodex, &cfg, "/usr/bin/texreq").unwrap();
-        let status = inspect_client_at(McpClient::OpenAiCodex, &cfg, "/usr/bin/texreq");
+        install_client_at(McpClient::CodexCli, &cfg, "/usr/bin/texreq").unwrap();
+        let status = inspect_client_at(McpClient::CodexCli, &cfg, "/usr/bin/texreq");
         assert!(status.installed);
         assert!(status.matches_command);
 
@@ -354,8 +354,8 @@ mod tests {
         assert!(raw.contains("model = \"gpt-5\""));
         assert!(raw.contains("[mcp_servers.other]"));
 
-        uninstall_client_at(McpClient::OpenAiCodex, &cfg).unwrap();
-        let after = inspect_client_at(McpClient::OpenAiCodex, &cfg, "/usr/bin/texreq");
+        uninstall_client_at(McpClient::CodexCli, &cfg).unwrap();
+        let after = inspect_client_at(McpClient::CodexCli, &cfg, "/usr/bin/texreq");
         assert!(!after.installed);
 
         let _ = fs::remove_dir_all(dir);
