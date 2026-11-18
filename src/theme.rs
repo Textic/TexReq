@@ -1,9 +1,12 @@
 use std::rc::Rc;
 
 use gpui_kit::{
-    App, Axis, Hsla,
+    App, Axis, ElementId, Entity, Hsla, MouseButton,
     base::{ResizeHandleContext, ResizeHandleRenderer, ResizeHandleState},
-    component::{Theme, ThemeMode},
+    component::{
+        Theme, ThemeMode,
+        input::{Input, InputState},
+    },
     div, img,
     prelude::*,
     px, rgb,
@@ -38,6 +41,7 @@ pub const COLOR_GRAPHQL: u32 = 0xec4899;
 
 pub const RADIUS_ROW: f32 = 6.;
 pub const RADIUS_CONTROL: f32 = 4.;
+pub const UI_REM_SIZE: f32 = 18.5;
 
 #[inline]
 pub fn solid(hex: u32) -> Hsla {
@@ -78,7 +82,7 @@ pub fn apply_flat_dark_theme(cx: &mut App) {
         theme.focus_ring = false;
         theme.radius = px(RADIUS_CONTROL);
         theme.radius_lg = px(RADIUS_ROW);
-        theme.font_size = px(13.);
+        theme.font_size = px(15.);
         theme.mono_font_size = px(12.5);
 
         let bg_base = solid(BG_BASE);
@@ -268,4 +272,27 @@ pub fn render_app_badge(size_px: f32) -> impl IntoElement {
         .w(px(size_px))
         .h(px(size_px))
         .flex_shrink_0()
+}
+
+/// Wraps a borderless single-line `Input` so clicks anywhere in its vertical
+/// height (including top/bottom container padding) focus the underlying field.
+pub fn full_hit_input(
+    id: impl Into<ElementId>,
+    state: &Entity<InputState>,
+    input: Input,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let target = state.clone();
+    div()
+        .id(id)
+        .h_full()
+        .flex()
+        .items_center()
+        .cursor_text()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            if !window.default_prevented() {
+                target.update(cx, |s, cx| s.focus(window, cx));
+                window.prevent_default();
+            }
+        })
+        .child(input.h_full().py_0())
 }

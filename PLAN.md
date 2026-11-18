@@ -14,7 +14,7 @@ A fast, native desktop API testing client built in Rust with **GPUI-Kit**. Desig
    - **Request Bodies**: JSON (with pretty formatter), Raw Text/XML/HTML/JS, URL-encoded Form, Multipart Form-Data (with file picker), and Binary file upload.
    - **Auth**: None, Bearer Token, Basic Auth, and API Key (header or query parameter).
    - **Response Captures**: Extract JSON dot-path values (`$.data.token`) directly into active environment variables after each response.
-   - **Network Controls**: Per-request or global timeout, HTTP redirects toggle, SSL/TLS verification toggle, and custom HTTP/HTTPS proxy (compatible with local interceptors like TexMITM).
+   - **Network Controls**: Per-request or global timeout, HTTP redirects toggle, SSL/TLS verification toggle, and custom HTTP/HTTPS proxy.
 
 2. **Flat Dark UI Architecture (`src/ui/`, `src/theme.rs`)**
    - **Frameless Window**: Integrated draggable top header bar alongside native-style window minimize/maximize/close buttons.

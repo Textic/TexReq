@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod mcp;
 mod models;
 mod net;
 mod storage;
@@ -31,6 +32,14 @@ impl AssetSource for TexReqAssets {
 }
 
 fn main() {
+    if std::env::args().skip(1).any(|arg| arg == "--mcp" || arg == "mcp") {
+        if let Err(err) = mcp::server::run_stdio_server() {
+            eprintln!("TexReq MCP server error: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     gpui_kit::application().with_assets(TexReqAssets).run(|cx| {
         gpui_kit::init(cx);
         theme::apply_flat_dark_theme(cx);
@@ -59,6 +68,7 @@ fn main() {
         };
 
         gpui_kit::open_window(options, cx, |window, cx| {
+            window.set_rem_size(px(theme::UI_REM_SIZE));
             cx.new(|cx| Workspace::new(window, cx))
         })
         .expect("failed to open TexReq window");

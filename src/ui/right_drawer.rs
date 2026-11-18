@@ -1,9 +1,8 @@
 use gpui_kit::{
     Context, SharedString, Window,
     component::{
-        Disableable as _, IconName, Sizable as _, Size, StyledExt as _,
+        IconName, Sizable as _, Size, StyledExt as _,
         button::{Button, ButtonVariants as _},
-        checkbox::Checkbox,
         h_flex,
         input::{Editor, Input},
         scroll::ScrollableElement as _,
@@ -15,10 +14,9 @@ use gpui_kit::{
 };
 
 use crate::net::snippets::{SnippetLang, build_resolved_headers, build_resolved_url};
-use crate::net::updater::{CURRENT_VERSION, UpdateState};
 use crate::theme::{
-    ACCENT_BLUE, BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER_SUBTLE, COLOR_GET, RADIUS_CONTROL,
-    RADIUS_ROW, TEXT_MUTED, TEXT_PRIMARY, solid,
+    ACCENT_BLUE, BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER_SUBTLE, RADIUS_CONTROL, RADIUS_ROW,
+    TEXT_MUTED, TEXT_PRIMARY, solid,
 };
 use crate::ui::kv_editor::{KvTarget, render_flat_subtab, render_kv_table};
 use crate::ui::workspace::{RightDrawerTab, Workspace};
@@ -36,7 +34,7 @@ pub fn render_right_rail_and_drawer(
         .when_some(active, |this, tab| {
             this.child(
                 v_flex()
-                    .w(px(340.))
+                    .w(px(360.))
                     .h_full()
                     .bg(solid(BG_SURFACE))
                     .border_l_1()
@@ -46,7 +44,6 @@ pub fn render_right_rail_and_drawer(
                         RightDrawerTab::Snippets => render_snippets_drawer(ws, cx).into_any_element(),
                         RightDrawerTab::Variables => render_variables_drawer(ws, cx).into_any_element(),
                         RightDrawerTab::NetworkInfo => render_network_info_drawer(ws, cx).into_any_element(),
-                        RightDrawerTab::Settings => render_settings_drawer(ws, cx).into_any_element(),
                     }),
             )
         })
@@ -167,16 +164,6 @@ fn render_snippets_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl I
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.copy_snippet(cx);
                                 })),
-                        )
-                        .child(
-                            Button::new("snip-close")
-                                .with_size(Size::XSmall)
-                                .ghost()
-                                .icon(IconName::Close)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.active_drawer = None;
-                                    cx.notify();
-                                })),
                         ),
                 ),
         )
@@ -224,10 +211,14 @@ fn render_variables_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl 
         .child(
             h_flex()
                 .w_full()
+                .gap_2()
                 .items_center()
                 .justify_between()
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
                         .text_xs()
                         .font_semibold()
                         .text_color(solid(TEXT_PRIMARY))
@@ -236,6 +227,7 @@ fn render_variables_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl 
                 .child(
                     h_flex()
                         .gap_1()
+                        .flex_shrink_0()
                         .child(
                             Button::new("vars-import-env")
                                 .with_size(Size::XSmall)
@@ -246,27 +238,44 @@ fn render_variables_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl 
                                     this.import_dotenv_dialog(window, cx);
                                 })),
                         )
-                        .child(
-                            Button::new("vars-save")
-                                .with_size(Size::XSmall)
-                                .primary()
-                                .label("Save")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.save_active_env_vars(cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("vars-close")
-                                .with_size(Size::XSmall)
-                                .ghost()
-                                .icon(IconName::Close)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.active_drawer = None;
-                                    cx.notify();
-                                })),
-                        ),
+                        .when(ws.active_env_id.is_some(), |el| {
+                            el.child(
+                                Button::new("vars-save")
+                                    .with_size(Size::XSmall)
+                                    .primary()
+                                    .label("Save")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.save_active_env_vars(cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("vars-delete-env")
+                                    .with_size(Size::XSmall)
+                                    .danger()
+                                    .icon(IconName::Delete)
+                                    .label("Delete")
+                                    .tooltip("Delete this environment")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.request_delete_active_environment(cx);
+                                    })),
+                            )
+                        }),
                 ),
         )
+        .when(ws.active_env_id.is_some(), |el| {
+            el.child(
+                v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_medium()
+                            .text_color(solid(TEXT_MUTED))
+                            .child("Environment Name"),
+                    )
+                    .child(Input::new(&ws.env_name_input).with_size(Size::XSmall)),
+            )
+        })
         .child(
             div()
                 .text_xs()
@@ -334,16 +343,6 @@ fn render_network_info_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> im
                         .font_semibold()
                         .text_color(solid(TEXT_PRIMARY))
                         .child("Network / TLS Inspector"),
-                )
-                .child(
-                    Button::new("netinfo-close")
-                        .with_size(Size::XSmall)
-                        .ghost()
-                        .icon(IconName::Close)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.active_drawer = None;
-                            cx.notify();
-                        })),
                 ),
         )
         .child(
@@ -455,497 +454,5 @@ fn timing_row(label: &str, ms: u128) -> impl IntoElement {
                 .font_medium()
                 .text_color(solid(TEXT_PRIMARY))
                 .child(SharedString::from(format!("{ms} ms"))),
-        )
-}
-
-fn render_settings_drawer(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
-    let workspace_path = ws.store.workspace_dir().to_string_lossy().to_string();
-    let git = &ws.git_status;
-
-    v_flex()
-        .size_full()
-        .p_3()
-        .gap_2p5()
-        .child(
-            h_flex()
-                .w_full()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_xs()
-                        .font_semibold()
-                        .text_color(solid(TEXT_PRIMARY))
-                        .child("Settings"),
-                )
-                .child(
-                    Button::new("settings-close")
-                        .with_size(Size::XSmall)
-                        .ghost()
-                        .icon(IconName::Close)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.active_drawer = None;
-                            cx.notify();
-                        })),
-                ),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_h_0()
-                .overflow_y_scrollbar()
-                .child(
-                    v_flex()
-                        .w_full()
-                        .gap_2p5()
-                        .pb_2()
-                        .child(
-                            v_flex()
-                                .p_2p5()
-                                .gap_2()
-                                .bg(solid(BG_ELEVATED))
-                                .border_1()
-                                .border_color(solid(BORDER_SUBTLE))
-                                .rounded(px(RADIUS_ROW))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_semibold()
-                                        .text_color(solid(TEXT_MUTED))
-                                        .child("General"),
-                                )
-                                .child(
-                                    Checkbox::new("set-auto-save")
-                                        .checked(ws.settings.auto_save)
-                                        .label("Auto-save saved requests")
-                                        .on_change(cx.listener(|this, next, _, cx| {
-                                            this.set_auto_save(*next, cx);
-                                        })),
-                                )
-                                .child(
-                                    Checkbox::new("set-auto-format")
-                                        .checked(ws.settings.auto_format_json)
-                                        .label("Auto-format JSON responses")
-                                        .on_change(cx.listener(|this, next, _, cx| {
-                                            this.set_auto_format_json(*next, cx);
-                                        })),
-                                ),
-                        )
-                        .child(
-                            v_flex()
-                                .p_2p5()
-                                .gap_2()
-                                .bg(solid(BG_ELEVATED))
-                                .border_1()
-                                .border_color(solid(BORDER_SUBTLE))
-                                .rounded(px(RADIUS_ROW))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_semibold()
-                                        .text_color(solid(TEXT_MUTED))
-                                        .child("Network & SSL Defaults"),
-                                )
-                                .child(
-                                    Checkbox::new("set-ssl-verify")
-                                        .checked(!ws.settings.default_accept_invalid_certs)
-                                        .label("Verify SSL/TLS certificates")
-                                        .on_change(cx.listener(|this, next, _, cx| {
-                                            this.set_global_ssl_verify(*next, cx);
-                                        })),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(solid(TEXT_MUTED))
-                                        .child("Disable to trust self-signed or localhost certificates."),
-                                )
-                                .child(
-                                    Checkbox::new("set-follow-redirects")
-                                        .checked(ws.settings.default_follow_redirects)
-                                        .label("Follow HTTP redirects by default")
-                                        .on_change(cx.listener(|this, next, _, cx| {
-                                            this.set_default_follow_redirects(*next, cx);
-                                        })),
-                                )
-                                .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .items_center()
-                                        .justify_between()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(solid(TEXT_MUTED))
-                                                .child("Default timeout (s):"),
-                                        )
-                                        .child(
-                                            div()
-                                                .w(px(76.))
-                                                .child(Input::new(&ws.settings_timeout_input).with_size(Size::XSmall)),
-                                        ),
-                                )
-                                .child(
-                                    v_flex()
-                                        .gap_1()
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(solid(TEXT_MUTED))
-                                                .child("Default HTTP/HTTPS proxy:"),
-                                        )
-                                        .child(
-                                            Input::new(&ws.settings_proxy_input).with_size(Size::XSmall),
-                                        ),
-                                )
-                                .child(
-                                    h_flex().justify_end().child(
-                                        Button::new("set-net-apply")
-                                            .with_size(Size::XSmall)
-                                            .secondary()
-                                            .label("Apply Defaults")
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.apply_default_network_inputs(window, cx);
-                                            })),
-                                    ),
-                                ),
-                        )
-                        .child(
-                            v_flex()
-                                .p_2p5()
-                                .gap_2()
-                                .bg(solid(BG_ELEVATED))
-                                .border_1()
-                                .border_color(solid(BORDER_SUBTLE))
-                                .rounded(px(RADIUS_ROW))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .font_semibold()
-                                        .text_color(solid(TEXT_MUTED))
-                                        .child("Workspace & Git"),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(solid(TEXT_MUTED))
-                                        .child("Collections and environments are stored here for version control."),
-                                )
-                                .child(
-                                    div()
-                                        .px_2()
-                                        .py_1p5()
-                                        .bg(solid(BG_SURFACE))
-                                        .border_1()
-                                        .border_color(solid(BORDER_SUBTLE))
-                                        .rounded(px(RADIUS_CONTROL))
-                                        .text_xs()
-                                        .text_color(solid(TEXT_PRIMARY))
-                                        .child(SharedString::from(workspace_path)),
-                                )
-                                .child(
-                                    h_flex()
-                                        .gap_1p5()
-                                        .child(
-                                            Button::new("set-ws-pick")
-                                                .with_size(Size::XSmall)
-                                                .secondary()
-                                                .icon(IconName::FolderOpen)
-                                                .label("Choose Folder...")
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.pick_workspace_folder(window, cx);
-                                                })),
-                                        )
-                                        .child(
-                                            Button::new("set-ws-reset")
-                                                .with_size(Size::XSmall)
-                                                .ghost()
-                                                .label("Reset Default")
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.reset_workspace_folder(window, cx);
-                                                })),
-                                        ),
-                                )
-                                .child(
-                                    v_flex()
-                                        .pt_2()
-                                        .gap_2()
-                                        .border_t_1()
-                                        .border_color(solid(BORDER_SUBTLE))
-                                        .when(!git.git_available, |this| {
-                                            this.child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(solid(TEXT_MUTED))
-                                                    .child("Git CLI was not found in PATH."),
-                                            )
-                                        })
-                                        .when(git.git_available && !git.is_repo, |this| {
-                                            this.child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(solid(TEXT_MUTED))
-                                                    .child("This workspace is not a Git repository yet."),
-                                            )
-                                            .child(
-                                                h_flex().gap_1p5().child(
-                                                    Button::new("set-git-init")
-                                                        .with_size(Size::XSmall)
-                                                        .primary()
-                                                        .label("Initialize Git Repo")
-                                                        .on_click(cx.listener(|this, _, _, cx| {
-                                                            this.git_init_workspace(cx);
-                                                        })),
-                                                ),
-                                            )
-                                        })
-                                        .when(git.git_available && git.is_repo, |this| {
-                                            this.child(
-                                                h_flex()
-                                                    .justify_between()
-                                                    .text_xs()
-                                                    .child(
-                                                        div()
-                                                            .text_color(solid(TEXT_MUTED))
-                                                            .child("Branch"),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .font_semibold()
-                                                            .text_color(solid(COLOR_GET))
-                                                            .child(SharedString::from(
-                                                                git.branch.clone(),
-                                                            )),
-                                                    ),
-                                            )
-                                            .child(
-                                                h_flex()
-                                                    .justify_between()
-                                                    .text_xs()
-                                                    .child(
-                                                        div()
-                                                            .text_color(solid(TEXT_MUTED))
-                                                            .child("Changed files"),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .font_medium()
-                                                            .text_color(solid(TEXT_PRIMARY))
-                                                            .child(SharedString::from(
-                                                                git.changed_files.to_string(),
-                                                            )),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(solid(TEXT_MUTED))
-                                                    .truncate()
-                                                    .child(SharedString::from(format!(
-                                                        "Remote: {}",
-                                                        git.remote_url
-                                                            .as_deref()
-                                                            .unwrap_or("none configured")
-                                                    ))),
-                                            )
-                                            .when_some(git.last_commit.clone(), |col, msg| {
-                                                col.child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(solid(TEXT_MUTED))
-                                                        .truncate()
-                                                        .child(SharedString::from(format!(
-                                                            "Last commit: {msg}"
-                                                        ))),
-                                                )
-                                            })
-                                            .child(
-                                                h_flex()
-                                                    .gap_1p5()
-                                                    .child(
-                                                        div().flex_1().min_w_0().child(
-                                                            Input::new(&ws.git_commit_msg_input)
-                                                                .with_size(Size::XSmall),
-                                                        ),
-                                                    )
-                                                    .child(
-                                                        Button::new("set-git-commit")
-                                                            .with_size(Size::XSmall)
-                                                            .primary()
-                                                            .label("Commit")
-                                                            .on_click(cx.listener(
-                                                                |this, _, window, cx| {
-                                                                    this.git_commit_workspace(
-                                                                        window, cx,
-                                                                    );
-                                                                },
-                                                            )),
-                                                    ),
-                                            )
-                                            .child(
-                                                h_flex()
-                                                    .gap_1p5()
-                                                    .child(
-                                                        Button::new("set-git-pull")
-                                                            .with_size(Size::XSmall)
-                                                            .secondary()
-                                                            .label("Pull")
-                                                            .on_click(cx.listener(
-                                                                |this, _, window, cx| {
-                                                                    this.git_pull_workspace(
-                                                                        window, cx,
-                                                                    );
-                                                                },
-                                                            )),
-                                                    )
-                                                    .child(
-                                                        Button::new("set-git-push")
-                                                            .with_size(Size::XSmall)
-                                                            .secondary()
-                                                            .label("Push")
-                                                            .on_click(cx.listener(
-                                                                |this, _, _, cx| {
-                                                                    this.git_push_workspace(cx);
-                                                                },
-                                                            )),
-                                                    )
-                                                    .child(
-                                                        Button::new("set-git-refresh")
-                                                            .with_size(Size::XSmall)
-                                                            .ghost()
-                                                            .icon(IconName::RefreshCw)
-                                                            .tooltip("Refresh Git status")
-                                                            .on_click(cx.listener(
-                                                                |this, _, _, cx| {
-                                                                    this.refresh_git_status(cx);
-                                                                },
-                                                            )),
-                                                    ),
-                                            )
-                                        })
-                                        .when_some(ws.git_notice.clone(), |this, notice| {
-                                            this.child(
-                                                div()
-                                                    .p_2()
-                                                    .bg(solid(BG_SURFACE))
-                                                    .border_1()
-                                                    .border_color(solid(BORDER_SUBTLE))
-                                                    .rounded(px(RADIUS_CONTROL))
-                                                    .text_xs()
-                                                    .text_color(solid(TEXT_PRIMARY))
-                                                    .child(SharedString::from(notice)),
-                                            )
-                                        }),
-                                ),
-                        )
-                        .child(render_updates_card(ws, cx)),
-                ),
-        )
-}
-
-fn render_updates_card(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
-    let state = &ws.update_state;
-    let is_checking = matches!(state, UpdateState::Checking);
-
-    v_flex()
-        .p_2p5()
-        .gap_2()
-        .bg(solid(BG_ELEVATED))
-        .border_1()
-        .border_color(solid(BORDER_SUBTLE))
-        .rounded(px(RADIUS_ROW))
-        .child(
-            h_flex()
-                .justify_between()
-                .items_center()
-                .child(
-                    div()
-                        .text_xs()
-                        .font_semibold()
-                        .text_color(solid(TEXT_MUTED))
-                        .child("Updates"),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(solid(TEXT_MUTED))
-                        .child(SharedString::from(format!("v{CURRENT_VERSION}"))),
-                ),
-        )
-        .child(match state {
-            UpdateState::Idle => div()
-                .text_xs()
-                .text_color(solid(TEXT_MUTED))
-                .child("Check GitHub Releases for new versions.")
-                .into_any_element(),
-            UpdateState::Checking => div()
-                .text_xs()
-                .text_color(solid(TEXT_MUTED))
-                .child("Checking for updates...")
-                .into_any_element(),
-            UpdateState::UpToDate => div()
-                .text_xs()
-                .text_color(solid(COLOR_GET))
-                .child("You are on the latest version.")
-                .into_any_element(),
-            UpdateState::Available(info) => v_flex()
-                .gap_1p5()
-                .child(
-                    div()
-                        .text_xs()
-                        .font_semibold()
-                        .text_color(solid(COLOR_GET))
-                        .child(SharedString::from(if info.published_at.is_empty() {
-                            format!("Version {} is available", info.tag_name)
-                        } else {
-                            format!("Version {} available ({})", info.tag_name, info.published_at)
-                        })),
-                )
-                .child(
-                    h_flex()
-                        .gap_1p5()
-                        .child(
-                            Button::new("set-update-download")
-                                .with_size(Size::XSmall)
-                                .primary()
-                                .icon(IconName::ArrowDown)
-                                .label(SharedString::from(format!("Download {}", info.tag_name)))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.open_update_download(cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("set-update-notes")
-                                .with_size(Size::XSmall)
-                                .ghost()
-                                .label("Release Notes")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.open_release_notes(cx);
-                                })),
-                        ),
-                )
-                .into_any_element(),
-            UpdateState::Failed(err) => div()
-                .text_xs()
-                .text_color(solid(TEXT_MUTED))
-                .child(SharedString::from(err.clone()))
-                .into_any_element(),
-        })
-        .child(
-            h_flex().justify_end().child(
-                Button::new("set-check-updates")
-                    .with_size(Size::XSmall)
-                    .secondary()
-                    .disabled(is_checking)
-                    .icon(IconName::RefreshCw)
-                    .label(if is_checking {
-                        "Checking..."
-                    } else {
-                        "Check for Updates"
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.check_for_updates(cx);
-                    })),
-            ),
         )
 }

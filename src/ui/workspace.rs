@@ -6,7 +6,7 @@ use futures_channel::mpsc::unbounded;
 use futures_util::StreamExt as _;
 use gpui_kit::{
     App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, KeyDownEvent,
-    SharedString, Window, WindowControlArea,
+    PathPromptOptions, SharedString, Window, WindowControlArea,
     component::{
         Icon, IconName, Sizable as _, Size, StyledExt as _,
         button::{Button, ButtonVariants as _},
@@ -23,15 +23,19 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use crate::models::{
-    AppSettings, CollectionFolder, Environment, HistoryEntry, KeyValueRow, RequestItem,
-    RequestKind, StreamStatus, parse_dotenv,
+    AppSettings, CollectionFolder, Environment, HistoryEntry, KeyValueRow, MAX_ENV_NAME_CHARS,
+    RequestItem, RequestKind, StreamStatus, next_environment_name, parse_dotenv, truncate_chars,
 };
 use crate::net::WorkerEvent;
 use crate::net::curl_parser::parse_curl;
 use crate::net::http_client::{execute_http, run_sse_stream};
 use crate::net::runtime::spawn_tokio;
 use crate::net::snippets::{SnippetLang, generate_snippet};
-use crate::net::updater::{self, UpdateState};
+use crate::mcp::installer::{
+    McpClient, McpClientStatus, generic_mcp_json, inspect_all_clients, install_client,
+    resolve_texreq_executable, uninstall_client,
+};
+use crate::net::updater::{self, REPO_URL, UpdateState};
 use crate::net::ws_client::{WsCommand, run_ws_session};
 use crate::storage::{LocalStore, git};
 use crate::theme::{
@@ -43,6 +47,9 @@ use crate::ui::kv_editor::{KvTarget, UiCaptureRow, UiKvRow};
 use crate::ui::request_pane::render_request_pane;
 use crate::ui::response_pane::render_response_pane;
 use crate::ui::right_drawer::render_right_rail_and_drawer;
+use crate::ui::settings_modal::{
+    PendingConfirm, SettingsCategory, render_confirm_modal, render_settings_modal,
+};
 use crate::ui::sidebar::render_sidebar;
 use crate::ui::tab_session::{BodyKindUi, RequestSubTab, ResponseSubTab, TabSession, should_autoparse_curl};
 
@@ -71,7 +78,6 @@ pub enum RightDrawerTab {
     Snippets,
     Variables,
     NetworkInfo,
-    Settings,
 }
 
 pub struct Workspace {
@@ -102,7 +108,19 @@ pub struct Workspace {
     pub git_commit_msg_input: Entity<gpui_kit::component::input::InputState>,
     pub update_state: UpdateState,
     pub folder_counter: usize,
-    pub env_counter: usize,
+    pub folder_git_statuses: HashMap<String, git::GitStatusInfo>,
+    pub git_target_folder_id: Option<String>,
+    pub env_name_input: Entity<gpui_kit::component::input::InputState>,
+    pub pending_confirm: Option<PendingConfirm>,
+    _env_name_sub: gpui_kit::Subscription,
+    pub show_settings_modal: bool,
+    pub settings_category: SettingsCategory,
+    pub mcp_command_path: String,
+    pub mcp_statuses: Vec<McpClientStatus>,
+    pub mcp_notice: Option<String>,
+    pub network_notice: Option<String>,
+    pub mcp_json_viewer: Entity<gpui_kit::component::input::EditorState>,
+    pub picker_open: bool,
 }
 
 impl Focusable for Workspace {
@@ -115,7 +133,8 @@ impl Workspace {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (store, settings) = LocalStore::from_settings();
         let git_status = git::inspect_repo(store.workspace_dir());
-        let collections = store.load_collections();
+        let collections = store.load_all_collections(&settings.linked_folders);
+        let folder_git_statuses = compute_folder_git_statuses(&collections);
         let history = store.load_history();
         let environments = store.load_environments();
         let active_env_id: Option<String> = None;
@@ -149,6 +168,44 @@ impl Workspace {
             gpui_kit::component::input::InputState::new(window, cx)
                 .placeholder("Commit message (optional)")
         });
+        let env_name_input = cx.new(|cx| {
+            gpui_kit::component::input::InputState::new(window, cx)
+                .placeholder("Environment name")
+        });
+        let _env_name_sub = cx.subscribe_in(
+            &env_name_input,
+            window,
+            |this, state, ev: &gpui_kit::component::input::InputEvent, window, cx| {
+                match ev {
+                    gpui_kit::component::input::InputEvent::Change => {
+                        let raw = state.read(cx).value().to_string();
+                        if raw.chars().count() > MAX_ENV_NAME_CHARS {
+                            let clamped: String = raw.chars().take(MAX_ENV_NAME_CHARS).collect();
+                            let st = state.clone();
+                            window.defer(cx, move |window, cx| {
+                                st.update(cx, |s, cx| s.set_value(clamped, window, cx));
+                            });
+                        }
+                        let next_name: String =
+                            raw.trim().chars().take(MAX_ENV_NAME_CHARS).collect();
+                        if !next_name.is_empty()
+                            && let Some(ref env_id) = this.active_env_id
+                            && let Some(env) = this.environments.iter_mut().find(|e| &e.id == env_id)
+                            && env.name != next_name
+                        {
+                            env.name = next_name;
+                            cx.notify();
+                        }
+                    }
+                    gpui_kit::component::input::InputEvent::PressEnter { .. }
+                    | gpui_kit::component::input::InputEvent::Blur => {
+                        this.save_active_env_vars_silent(cx);
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+            },
+        );
         let snippet_viewer = cx.new(|cx| {
             gpui_kit::component::input::EditorState::new(window, cx)
                 .language("bash")
@@ -159,7 +216,15 @@ impl Workspace {
         let focus_handle = cx.focus_handle();
 
         let folder_counter = collections.len();
-        let env_counter = environments.len();
+        let mcp_command_path = resolve_texreq_executable();
+        let mcp_statuses = inspect_all_clients(&mcp_command_path);
+        let mcp_json_text = generic_mcp_json(&mcp_command_path);
+        let mcp_json_viewer = cx.new(|cx| {
+            gpui_kit::component::input::EditorState::new(window, cx)
+                .language("json")
+                .line_number(false)
+                .default_value(mcp_json_text)
+        });
 
         let mut ws = Self {
             focus_handle,
@@ -186,7 +251,19 @@ impl Workspace {
             git_commit_msg_input,
             update_state: UpdateState::Idle,
             folder_counter,
-            env_counter,
+            folder_git_statuses,
+            git_target_folder_id: None,
+            env_name_input,
+            pending_confirm: None,
+            _env_name_sub,
+            show_settings_modal: false,
+            settings_category: SettingsCategory::General,
+            mcp_command_path,
+            mcp_statuses,
+            mcp_notice: None,
+            network_notice: None,
+            mcp_json_viewer,
+            picker_open: false,
         };
 
         ws.refresh_snippet_editor(window, cx);
@@ -348,23 +425,161 @@ impl Workspace {
         self.folder_counter += 1;
         let folder = CollectionFolder::new(format!("Collection {}", self.folder_counter));
         self.collections.push(folder);
-        self.store.save_collections(&self.collections);
+        self.store.save_all_collections(&self.collections);
         self.sidebar_mode = SidebarMode::Collections;
         self.show_sidebar = true;
         cx.notify();
     }
 
+    /// Opens GPUI's non-blocking native path picker after the active click event finishes so OS
+    /// modal loops never re-enter GPUI while `App`'s mutable `RefCell` borrow is held.
+    fn pick_single_path(
+        &mut self,
+        files: bool,
+        directories: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        on_picked: impl FnOnce(&mut Self, PathBuf, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        if self.picker_open {
+            return;
+        }
+        self.picker_open = true;
+
+        cx.spawn_in(window, async move |this, cx| {
+            let rx = cx
+                .update(|_window, cx| {
+                    cx.prompt_for_paths(PathPromptOptions {
+                        files,
+                        directories,
+                        multiple: false,
+                        prompt: None,
+                    })
+                })
+                .ok();
+            let res = match rx {
+                Some(rx) => rx.await.ok(),
+                None => None,
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.picker_open = false;
+                match res {
+                    Some(Ok(Some(paths))) => {
+                        if let Some(path) = paths.into_iter().next() {
+                            on_picked(this, path, window, cx);
+                        }
+                    }
+                    Some(Ok(None)) | None => {}
+                    Some(Err(err)) => {
+                        this.git_notice = Some(format!("Failed to open path dialog: {err}"));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn link_collection_folder_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pick_single_path(false, true, window, cx, |this, folder_dir, _window, cx| {
+            this.apply_linked_collection_folder(folder_dir, cx);
+        });
+    }
+
+    fn apply_linked_collection_folder(&mut self, folder_dir: PathBuf, cx: &mut Context<Self>) {
+        let normalized = folder_dir.to_string_lossy().to_string();
+        let canonical_target =
+            std::fs::canonicalize(&folder_dir).unwrap_or_else(|_| folder_dir.clone());
+        if let Some(existing) = self.collections.iter_mut().find(|f| {
+            f.disk_path.as_ref().is_some_and(|p| {
+                std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == canonical_target
+            })
+        }) {
+            existing.expanded = true;
+            self.sidebar_mode = SidebarMode::Collections;
+            self.show_sidebar = true;
+            cx.notify();
+            return;
+        }
+
+        match self.store.load_linked_folder(&folder_dir) {
+            Ok(mut folder) => {
+                folder.expanded = true;
+                let fid = folder.id.clone();
+                if let Some(dir) = folder.disk_path.as_deref() {
+                    self.folder_git_statuses
+                        .insert(fid.clone(), git::inspect_folder_repo(dir));
+                }
+                self.collections.push(folder);
+                if !self.settings.linked_folders.iter().any(|p| p == &normalized) {
+                    self.settings.linked_folders.push(normalized);
+                    self.store.save_settings(&self.settings);
+                }
+                self.sidebar_mode = SidebarMode::Collections;
+                self.show_sidebar = true;
+                cx.notify();
+            }
+            Err(err) => {
+                self.git_notice = Some(err);
+                cx.notify();
+            }
+        }
+    }
+
     pub fn toggle_folder(&mut self, folder_id: &str, cx: &mut Context<Self>) {
         if let Some(folder) = self.collections.iter_mut().find(|f| f.id == folder_id) {
             folder.expanded = !folder.expanded;
-            self.store.save_collections(&self.collections);
+            self.store.save_all_collections(&self.collections);
             cx.notify();
         }
     }
 
+    pub fn request_remove_folder(&mut self, folder_id: &str, cx: &mut Context<Self>) {
+        let Some(folder) = self.collections.iter().find(|f| f.id == folder_id) else {
+            return;
+        };
+        if let Some(path) = folder.disk_path.as_ref() {
+            self.pending_confirm = Some(PendingConfirm::UnlinkFolder {
+                id: folder.id.clone(),
+                name: folder.name.clone(),
+                path: path.to_string_lossy().to_string(),
+            });
+            cx.notify();
+        } else if !folder.requests.is_empty() {
+            self.pending_confirm = Some(PendingConfirm::DeleteFolder {
+                id: folder.id.clone(),
+                name: folder.name.clone(),
+                count: folder.requests.len(),
+            });
+            cx.notify();
+        } else {
+            self.delete_folder(folder_id, cx);
+        }
+    }
+
     pub fn delete_folder(&mut self, folder_id: &str, cx: &mut Context<Self>) {
+        let removed_path = self
+            .collections
+            .iter()
+            .find(|f| f.id == folder_id)
+            .and_then(|f| f.disk_path.clone());
         self.collections.retain(|f| f.id != folder_id);
-        self.store.save_collections(&self.collections);
+        self.folder_git_statuses.remove(folder_id);
+        if let Some(disk_dir) = removed_path {
+            let target_canon = std::fs::canonicalize(&disk_dir).unwrap_or(disk_dir);
+            self.settings.linked_folders.retain(|raw| {
+                let p = PathBuf::from(raw);
+                let canon = std::fs::canonicalize(&p).unwrap_or(p);
+                canon != target_canon
+            });
+            self.store.save_settings(&self.settings);
+            if self.git_target_folder_id.as_deref() == Some(folder_id) {
+                self.git_target_folder_id = None;
+                self.refresh_all_git_statuses();
+            }
+        } else {
+            self.store.save_all_collections(&self.collections);
+        }
         cx.notify();
     }
 
@@ -380,8 +595,9 @@ impl Workspace {
         if let Some(folder) = self.collections.iter_mut().find(|f| f.id == folder_id) {
             folder.expanded = true;
             folder.requests.push(req.clone());
-            self.store.save_collections(&self.collections);
+            self.store.save_all_collections(&self.collections);
         }
+        self.refresh_folder_git_if_linked(folder_id);
         let tab = TabSession::from_request(&req, Some(req_id), window, cx);
         let url = tab.url_input.clone();
         self.active_tab_id = tab.id.clone();
@@ -393,8 +609,9 @@ impl Workspace {
     pub fn delete_saved_request(&mut self, folder_id: &str, req_id: &str, cx: &mut Context<Self>) {
         if let Some(folder) = self.collections.iter_mut().find(|f| f.id == folder_id) {
             folder.requests.retain(|r| r.id != req_id);
-            self.store.save_collections(&self.collections);
+            self.store.save_all_collections(&self.collections);
         }
+        self.refresh_folder_git_if_linked(folder_id);
         for tab in &mut self.tabs {
             if tab.saved_request_id.as_deref() == Some(req_id) {
                 tab.saved_request_id = None;
@@ -415,23 +632,24 @@ impl Workspace {
             self.collections.push(CollectionFolder::new("General"));
         }
 
-        let mut updated = false;
+        let mut updated_folder_id: Option<String> = None;
         if let Some(ref sid) = existing_id {
             for folder in &mut self.collections {
                 if let Some(slot) = folder.requests.iter_mut().find(|r| &r.id == sid) {
                     model.id = sid.clone();
                     *slot = model.clone();
-                    updated = true;
+                    updated_folder_id = Some(folder.id.clone());
                     break;
                 }
             }
         }
 
-        if !updated {
+        if updated_folder_id.is_none() {
             model.id = Uuid::new_v4().to_string();
             let first = &mut self.collections[0];
             first.expanded = true;
             first.requests.push(model.clone());
+            updated_folder_id = Some(first.id.clone());
         }
 
         if let Some(tab_mut) = self.active_tab_mut() {
@@ -439,7 +657,10 @@ impl Workspace {
             tab_mut.dirty = false;
         }
 
-        self.store.save_collections(&self.collections);
+        self.store.save_all_collections(&self.collections);
+        if let Some(fid) = updated_folder_id {
+            self.refresh_folder_git_if_linked(&fid);
+        }
         cx.notify();
     }
 
@@ -676,9 +897,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(path) = rfd::FileDialog::new().pick_file() {
+        let row_id = row_id.to_string();
+        self.pick_single_path(true, false, window, cx, move |this, path, window, cx| {
             let p_str = path.to_string_lossy().to_string();
-            if let Some(tab) = self.active_tab_mut()
+            if let Some(tab) = this.active_tab_mut()
                 && let Some(row) = tab.multipart_rows.iter_mut().find(|r| r.id == row_id)
             {
                 row.is_file = true;
@@ -687,19 +909,19 @@ impl Workspace {
                 tab.dirty = true;
             }
             cx.notify();
-        }
+        });
     }
 
     pub fn pick_binary_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = rfd::FileDialog::new().pick_file() {
+        self.pick_single_path(true, false, window, cx, |this, path, window, cx| {
             let p_str = path.to_string_lossy().to_string();
-            if let Some(tab) = self.active_tab_mut() {
+            if let Some(tab) = this.active_tab_mut() {
                 tab.binary_path_input
                     .update(cx, |s, cx| s.set_value(p_str, window, cx));
                 tab.dirty = true;
             }
             cx.notify();
-        }
+        });
     }
 
     pub fn capture_toggle(&mut self, row_id: &str, enabled: bool, cx: &mut Context<Self>) {
@@ -1121,14 +1343,15 @@ impl Workspace {
         let _ = names;
     }
 
-    pub fn select_environment(
-        &mut self,
-        env_id: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.save_active_env_vars_silent(cx);
-        self.active_env_id = env_id;
+    fn sync_active_env_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected_name = self
+            .active_env_id
+            .as_ref()
+            .and_then(|id| self.environments.iter().find(|e| &e.id == id))
+            .map(|e| e.name.clone())
+            .unwrap_or_default();
+        self.env_name_input
+            .update(cx, |s, cx| s.set_value(selected_name, window, cx));
         self.env_var_rows = self
             .active_env_id
             .as_ref()
@@ -1141,16 +1364,24 @@ impl Workspace {
             })
             .unwrap_or_default();
         self.refresh_snippet_editor(window, cx);
+    }
+
+    pub fn select_environment(
+        &mut self,
+        env_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_active_env_vars_silent(cx);
+        self.active_env_id = env_id;
+        self.sync_active_env_inputs(window, cx);
         cx.notify();
     }
 
     pub fn create_environment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_active_env_vars_silent(cx);
-        self.env_counter += 1;
-        let env = Environment::new(
-            format!("Environment {}", self.env_counter),
-            vec![KeyValueRow::new("base_url", "http://127.0.0.1:8000")],
-        );
+        let name = next_environment_name(&self.environments);
+        let env = Environment::new(name, Vec::new());
         let new_id = env.id.clone();
         self.environments.push(env);
         self.store.save_environments(&self.environments);
@@ -1159,11 +1390,89 @@ impl Workspace {
         cx.notify();
     }
 
+    pub fn request_delete_active_environment(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.active_env_id.clone() {
+            self.request_delete_environment(&id, cx);
+        }
+    }
+
+    pub fn request_delete_environment(&mut self, env_id: &str, cx: &mut Context<Self>) {
+        if let Some(env) = self.environments.iter().find(|e| e.id == env_id) {
+            self.pending_confirm = Some(PendingConfirm::DeleteEnvironment {
+                id: env.id.clone(),
+                name: env.name.clone(),
+            });
+            cx.notify();
+        }
+    }
+
+    pub fn request_clear_history(&mut self, cx: &mut Context<Self>) {
+        if !self.history.is_empty() {
+            self.pending_confirm = Some(PendingConfirm::ClearHistory);
+            cx.notify();
+        }
+    }
+
+    pub fn dismiss_confirm(&mut self, cx: &mut Context<Self>) {
+        if self.pending_confirm.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub fn accept_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.pending_confirm.take() {
+            Some(PendingConfirm::DeleteEnvironment { id, .. }) => {
+                self.delete_environment(&id, window, cx);
+            }
+            Some(PendingConfirm::ClearHistory) => {
+                self.clear_history(cx);
+            }
+            Some(PendingConfirm::DeleteFolder { id, .. })
+            | Some(PendingConfirm::UnlinkFolder { id, .. }) => {
+                self.delete_folder(&id, cx);
+            }
+            None => {}
+        }
+    }
+
+    pub fn delete_environment(
+        &mut self,
+        env_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let before = self.environments.len();
+        self.environments.retain(|e| e.id != env_id);
+        if self.environments.len() == before {
+            return;
+        }
+        self.store.save_environments(&self.environments);
+        if self.active_env_id.as_deref() == Some(env_id) {
+            self.active_env_id = None;
+            self.env_var_rows.clear();
+            self.env_name_input
+                .update(cx, |s, cx| s.set_value("", window, cx));
+            self.refresh_snippet_editor(window, cx);
+        }
+        cx.notify();
+    }
+
     pub fn save_active_env_vars_silent(&mut self, cx: &App) {
         if let Some(ref env_id) = self.active_env_id {
             let models: Vec<KeyValueRow> =
                 self.env_var_rows.iter().map(|r| r.to_model(cx)).collect();
+            let edited_name: String = self
+                .env_name_input
+                .read(cx)
+                .value()
+                .trim()
+                .chars()
+                .take(MAX_ENV_NAME_CHARS)
+                .collect();
             if let Some(env) = self.environments.iter_mut().find(|e| &e.id == env_id) {
+                if !edited_name.is_empty() {
+                    env.name = edited_name;
+                }
                 env.variables = models;
             }
             self.store.save_environments(&self.environments);
@@ -1176,12 +1485,10 @@ impl Workspace {
     }
 
     pub fn import_dotenv_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Env files", &["env", "txt"])
-            .pick_file()
-        else {
-            return;
-        };
+        self.pick_single_path(true, false, window, cx, Self::apply_dotenv_file);
+    }
+
+    fn apply_dotenv_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let Ok(content) = std::fs::read_to_string(&path) else {
             if let Some(tab) = self.active_tab_mut() {
                 tab.last_error = Some("Failed to read .env file.".to_string());
@@ -1238,8 +1545,6 @@ impl Workspace {
             self.active_drawer = Some(tab);
             if tab == RightDrawerTab::Snippets {
                 self.refresh_snippet_editor(window, cx);
-            } else if tab == RightDrawerTab::Settings {
-                self.git_status = git::inspect_repo(self.store.workspace_dir());
             }
         }
         cx.notify();
@@ -1250,9 +1555,6 @@ impl Workspace {
             self.active_drawer = None;
         } else {
             self.active_drawer = Some(tab);
-            if tab == RightDrawerTab::Settings {
-                self.git_status = git::inspect_repo(self.store.workspace_dir());
-            }
         }
         cx.notify();
     }
@@ -1303,7 +1605,7 @@ impl Workspace {
             }
         }
         if changed {
-            self.store.save_collections(&self.collections);
+            self.store.save_all_collections(&self.collections);
         }
     }
 
@@ -1354,15 +1656,181 @@ impl Workspace {
         let normalized_timeout = timeout_secs.to_string();
         self.settings_timeout_input
             .update(cx, |s, cx| s.set_value(normalized_timeout, window, cx));
-        self.git_notice = Some("Default network settings updated.".to_string());
+        self.network_notice = Some("Default network settings updated.".to_string());
         cx.notify();
     }
 
+    pub fn toggle_settings_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.show_settings_modal {
+            self.close_settings(cx);
+        } else {
+            let category = self.settings_category;
+            self.open_settings(category, window, cx);
+        }
+    }
+
+    pub fn open_settings(
+        &mut self,
+        category: SettingsCategory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_settings_modal = true;
+        self.settings_category = category;
+        self.refresh_all_git_statuses();
+        self.refresh_mcp_state(window, cx);
+        cx.notify();
+    }
+
+    pub fn open_folder_git_settings(
+        &mut self,
+        folder_id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.git_target_folder_id = Some(folder_id.to_string());
+        self.git_notice = None;
+        self.open_settings(SettingsCategory::WorkspaceGit, window, cx);
+    }
+
+    pub fn select_git_target(&mut self, folder_id: Option<String>, cx: &mut Context<Self>) {
+        self.git_target_folder_id = folder_id;
+        self.git_notice = None;
+        self.refresh_all_git_statuses();
+        cx.notify();
+    }
+
+    pub fn active_git_linked_folder(&self) -> Option<&CollectionFolder> {
+        let fid = self.git_target_folder_id.as_deref()?;
+        self.collections
+            .iter()
+            .find(|f| f.id == fid && f.disk_path.is_some())
+    }
+
+    pub fn active_git_target_dir(&self) -> PathBuf {
+        self.active_git_linked_folder()
+            .and_then(|f| f.disk_path.clone())
+            .unwrap_or_else(|| self.store.workspace_dir().to_path_buf())
+    }
+
+    fn refresh_folder_git_if_linked(&mut self, folder_id: &str) {
+        if let Some(dir) = self
+            .collections
+            .iter()
+            .find(|f| f.id == folder_id)
+            .and_then(|f| f.disk_path.as_deref())
+        {
+            let status = git::inspect_folder_repo(dir);
+            self.folder_git_statuses
+                .insert(folder_id.to_string(), status.clone());
+            if self.git_target_folder_id.as_deref() == Some(folder_id) {
+                self.git_status = status;
+            }
+        }
+    }
+
+    fn refresh_all_git_statuses(&mut self) {
+        self.folder_git_statuses = compute_folder_git_statuses(&self.collections);
+        if let Some(fid) = self.git_target_folder_id.clone() {
+            if let Some(status) = self.folder_git_statuses.get(&fid) {
+                self.git_status = status.clone();
+                return;
+            }
+            self.git_target_folder_id = None;
+        }
+        self.git_status = git::inspect_repo(self.store.workspace_dir());
+    }
+
+    pub fn close_settings(&mut self, cx: &mut Context<Self>) {
+        self.show_settings_modal = false;
+        cx.notify();
+    }
+
+    pub fn select_settings_category(
+        &mut self,
+        category: SettingsCategory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_category = category;
+        if category == SettingsCategory::WorkspaceGit {
+            self.refresh_all_git_statuses();
+        } else if category == SettingsCategory::Mcp {
+            self.refresh_mcp_state(window, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn refresh_mcp_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.mcp_command_path = resolve_texreq_executable();
+        self.mcp_statuses = inspect_all_clients(&self.mcp_command_path);
+        let json_text = generic_mcp_json(&self.mcp_command_path);
+        self.mcp_json_viewer.update(cx, |state, cx| {
+            state.set_value(json_text, window, cx);
+        });
+        cx.notify();
+    }
+
+    pub fn install_mcp_client(&mut self, client: McpClient, cx: &mut Context<Self>) {
+        match install_client(client, &self.mcp_command_path) {
+            Ok(msg) => {
+                self.mcp_notice = Some(msg);
+                self.mcp_statuses = inspect_all_clients(&self.mcp_command_path);
+            }
+            Err(err) => {
+                self.mcp_notice = Some(err);
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn uninstall_mcp_client(&mut self, client: McpClient, cx: &mut Context<Self>) {
+        match uninstall_client(client) {
+            Ok(msg) => {
+                self.mcp_notice = Some(msg);
+                self.mcp_statuses = inspect_all_clients(&self.mcp_command_path);
+            }
+            Err(err) => {
+                self.mcp_notice = Some(err);
+            }
+        }
+        cx.notify();
+    }
+
+    pub fn copy_mcp_command(&mut self, cx: &mut Context<Self>) {
+        let cmd = format!("{} --mcp", self.mcp_command_path);
+        cx.write_to_clipboard(ClipboardItem::new_string(cmd));
+        self.mcp_notice = Some("Copied MCP command to clipboard.".to_string());
+        cx.notify();
+    }
+
+    pub fn copy_mcp_json(&mut self, cx: &mut Context<Self>) {
+        let json = generic_mcp_json(&self.mcp_command_path);
+        cx.write_to_clipboard(ClipboardItem::new_string(json));
+        self.mcp_notice = Some("Copied generic MCP JSON to clipboard.".to_string());
+        cx.notify();
+    }
+
+    pub fn set_mcp_mask_secrets(&mut self, mask: bool, cx: &mut Context<Self>) {
+        self.settings.mcp_mask_secrets = mask;
+        self.store.save_settings(&self.settings);
+        cx.notify();
+    }
+
+    pub fn set_mcp_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
+        self.settings.mcp_read_only = read_only;
+        self.store.save_settings(&self.settings);
+        cx.notify();
+    }
+
+    pub fn open_github_repo(&mut self, _cx: &mut Context<Self>) {
+        let _ = updater::open_url_in_browser(REPO_URL);
+    }
+
     pub fn pick_workspace_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(folder) = rfd::FileDialog::new().pick_folder() else {
-            return;
-        };
-        self.switch_workspace_dir(Some(folder), window, cx);
+        self.pick_single_path(false, true, window, cx, |this, folder, window, cx| {
+            this.switch_workspace_dir(Some(folder), window, cx);
+        });
     }
 
     pub fn reset_workspace_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1385,7 +1853,7 @@ impl Workspace {
         self.store.save_settings(&self.settings);
 
         self.reload_or_seed_workspace(window, cx);
-        self.git_status = git::inspect_repo(self.store.workspace_dir());
+        self.refresh_all_git_statuses();
         self.git_notice = Some(format!(
             "Workspace set to {}",
             self.store.workspace_dir().to_string_lossy()
@@ -1396,9 +1864,10 @@ impl Workspace {
     fn reload_or_seed_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let dir = self.store.workspace_dir().to_path_buf();
         if dir.join("collections.json").exists() {
-            self.collections = self.store.load_collections();
+            self.collections = self.store.load_all_collections(&self.settings.linked_folders);
         } else {
-            self.store.save_collections(&self.collections);
+            self.store.save_all_collections(&self.collections);
+            self.collections = self.store.load_all_collections(&self.settings.linked_folders);
         }
 
         if dir.join("environments.toml").exists() {
@@ -1411,47 +1880,49 @@ impl Workspace {
             self.store.save_environments(&self.environments);
         }
 
-        self.env_var_rows = self
-            .active_env_id
-            .as_ref()
-            .and_then(|id| self.environments.iter().find(|e| &e.id == id))
-            .map(|env| {
-                env.variables
-                    .iter()
-                    .map(|r| UiKvRow::from_model(r, window, cx))
-                    .collect()
-            })
-            .unwrap_or_default();
-        self.refresh_snippet_editor(window, cx);
+        self.sync_active_env_inputs(window, cx);
+        self.refresh_all_git_statuses();
     }
 
     pub fn refresh_git_status(&mut self, cx: &mut Context<Self>) {
-        self.git_status = git::inspect_repo(self.store.workspace_dir());
+        self.refresh_all_git_statuses();
         cx.notify();
     }
 
     pub fn git_init_workspace(&mut self, cx: &mut Context<Self>) {
         self.autosave_saved_tabs(cx);
         self.save_active_env_vars_silent(cx);
-        self.store.save_collections(&self.collections);
-        self.store.save_environments(&self.environments);
+        self.store.save_all_collections(&self.collections);
+        if self.active_git_linked_folder().is_none() {
+            self.store.save_environments(&self.environments);
+        }
 
-        match git::init_repo(self.store.workspace_dir()) {
+        let target_dir = self.active_git_target_dir();
+        match git::init_repo(&target_dir) {
             Ok(msg) => self.git_notice = Some(msg),
             Err(err) => self.git_notice = Some(format!("Git init failed: {err}")),
         }
-        self.git_status = git::inspect_repo(self.store.workspace_dir());
+        self.refresh_all_git_statuses();
         cx.notify();
     }
 
     pub fn git_commit_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.autosave_saved_tabs(cx);
         self.save_active_env_vars_silent(cx);
-        self.store.save_collections(&self.collections);
-        self.store.save_environments(&self.environments);
+        self.store.save_all_collections(&self.collections);
+        let is_linked = self.active_git_linked_folder().is_some();
+        if !is_linked {
+            self.store.save_environments(&self.environments);
+        }
 
+        let target_dir = self.active_git_target_dir();
         let message = self.git_commit_msg_input.read(cx).value().to_string();
-        match git::commit_workspace(self.store.workspace_dir(), &message) {
+        let outcome = if is_linked {
+            git::commit_linked_folder(&target_dir, &message)
+        } else {
+            git::commit_workspace(&target_dir, &message)
+        };
+        match outcome {
             Ok(msg) => {
                 self.git_commit_msg_input
                     .update(cx, |s, cx| s.set_value(String::new(), window, cx));
@@ -1461,12 +1932,12 @@ impl Workspace {
                 self.git_notice = Some(format!("Commit failed: {err}"));
             }
         }
-        self.git_status = git::inspect_repo(self.store.workspace_dir());
+        self.refresh_all_git_statuses();
         cx.notify();
     }
 
     pub fn git_pull_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let dir = self.store.workspace_dir().to_path_buf();
+        let dir = self.active_git_target_dir();
         let (tx, mut rx) = unbounded::<Result<String, String>>();
         self.git_notice = Some("Pulling from origin...".to_string());
         cx.notify();
@@ -1494,7 +1965,7 @@ impl Workspace {
                             this.git_notice = Some(format!("Pull failed: {err}"));
                         }
                     }
-                    this.git_status = git::inspect_repo(this.store.workspace_dir());
+                    this.refresh_all_git_statuses();
                     cx.notify();
                 });
             }
@@ -1503,7 +1974,7 @@ impl Workspace {
     }
 
     pub fn git_push_workspace(&mut self, cx: &mut Context<Self>) {
-        let dir = self.store.workspace_dir().to_path_buf();
+        let dir = self.active_git_target_dir();
         let (tx, mut rx) = unbounded::<Result<String, String>>();
         self.git_notice = Some("Pushing to origin...".to_string());
         cx.notify();
@@ -1530,7 +2001,7 @@ impl Workspace {
                             this.git_notice = Some(format!("Push failed: {err}"));
                         }
                     }
-                    this.git_status = git::inspect_repo(this.store.workspace_dir());
+                    this.refresh_all_git_statuses();
                     cx.notify();
                 });
             }
@@ -1660,6 +2131,14 @@ impl Workspace {
     }
 
     fn on_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_confirm.is_some() && ev.keystroke.key == "escape" {
+            self.dismiss_confirm(cx);
+            return;
+        }
+        if self.show_settings_modal && ev.keystroke.key == "escape" {
+            self.close_settings(cx);
+            return;
+        }
         if ev.keystroke.modifiers.control && ev.keystroke.key == "enter" {
             self.trigger_primary_action(window, cx);
         }
@@ -1710,7 +2189,7 @@ impl Render for Workspace {
                 // Integrated Frameless Top Bar: Tabs + Drag Spacer + Toolbar + Min/Max/Close
                 h_flex()
                     .w_full()
-                    .h(px(38.))
+                    .h(px(40.))
                     .pl_2()
                     .gap_2()
                     .items_center()
@@ -1762,7 +2241,7 @@ impl Render for Workspace {
 
                                 h_flex()
                                     .id(("open-tab", ix))
-                                    .h(px(28.))
+                                    .h(px(30.))
                                     .px_2()
                                     .gap_1p5()
                                     .flex_shrink_0()
@@ -1841,9 +2320,8 @@ impl Render for Workspace {
                                         .icon(IconName::ArrowDown)
                                         .label(SharedString::from(format!("Update {}", info.tag_name)))
                                         .tooltip("New TexReq version available in Settings")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.active_drawer = Some(RightDrawerTab::Settings);
-                                            cx.notify();
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.open_settings(SettingsCategory::Info, window, cx);
                                         })),
                                 )
                             })
@@ -1866,12 +2344,19 @@ impl Render for Workspace {
                                         cx.notify();
                                     })),
                             )
-                            .child(
+                            .child({
+                                let top_env_label = truncate_chars(&active_env_name, 18);
+                                let full_env_name = active_env_name.clone();
+                                let show_tip = top_env_label != full_env_name;
                                 Button::new("top-env-picker")
                                     .with_size(Size::XSmall)
                                     .secondary()
                                     .dropdown_caret(true)
-                                    .label(SharedString::from(active_env_name))
+                                    .max_w(px(180.))
+                                    .label(SharedString::from(top_env_label))
+                                    .when(show_tip, |btn| {
+                                        btn.tooltip(SharedString::from(full_env_name))
+                                    })
                                     .dropdown_menu(move |mut menu, _, _| {
                                         let v_none = view.clone();
                                         menu = menu.item(
@@ -1889,7 +2374,7 @@ impl Render for Workspace {
                                             let is_cur =
                                                 active_env_id.as_deref() == Some(eid.as_str());
                                             menu = menu.item(
-                                                PopupMenuItem::new(ename.clone())
+                                                PopupMenuItem::new(truncate_chars(ename, 28))
                                                     .checked(is_cur)
                                                     .on_click(move |_, window, app| {
                                                         v_env.update(app, |this, cx| {
@@ -1914,7 +2399,7 @@ impl Render for Workspace {
                                             ),
                                         );
                                         let v_dot = view.clone();
-                                        menu.item(
+                                        menu = menu.item(
                                             PopupMenuItem::new("Import .env...").on_click(
                                                 move |_, window, app| {
                                                     v_dot.update(app, |this, cx| {
@@ -1922,9 +2407,42 @@ impl Render for Workspace {
                                                     });
                                                 },
                                             ),
-                                        )
-                                    }),
-                            )
+                                        );
+                                        if let Some(del_id) = active_env_id.clone() {
+                                            let del_name = envs_snapshot
+                                                .iter()
+                                                .find(|(id, _)| id == &del_id)
+                                                .map(|(_, name)| truncate_chars(name, 22))
+                                                .unwrap_or_else(|| "Environment".to_string());
+                                            let v_del = view.clone();
+                                            menu = menu.separator();
+                                            menu = menu.item(
+                                                PopupMenuItem::element(move |_, _| {
+                                                    h_flex()
+                                                        .gap_1p5()
+                                                        .items_center()
+                                                        .text_color(solid(COLOR_DELETE))
+                                                        .child(
+                                                            Icon::new(IconName::Delete)
+                                                                .size_3p5()
+                                                                .text_color(solid(COLOR_DELETE)),
+                                                        )
+                                                        .child(SharedString::from(format!(
+                                                            "Delete \"{del_name}\""
+                                                        )))
+                                                })
+                                                .on_click(move |_, _, app| {
+                                                    v_del.update(app, |this, cx| {
+                                                        this.request_delete_environment(
+                                                            &del_id, cx,
+                                                        );
+                                                    });
+                                                }),
+                                            );
+                                        }
+                                        menu
+                                    })
+                            })
                             .child(div().w(px(1.)).h(px(16.)).bg(solid(BORDER_SUBTLE)))
                             .child(render_window_controls(window)),
                     ),
@@ -1967,10 +2485,17 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_format_json_action))
             .on_action(cx.listener(Self::on_quit_action))
             .on_key_down(cx.listener(Self::on_key_down))
+            .relative()
             .size_full()
             .bg(solid(BG_BASE))
             .text_color(solid(TEXT_PRIMARY))
             .child(main_area)
+            .when(self.show_settings_modal, |root| {
+                root.child(render_settings_modal(self, window, cx))
+            })
+            .when_some(self.pending_confirm.as_ref(), |root, action| {
+                root.child(render_confirm_modal(action, cx))
+            })
     }
 }
 
@@ -2030,4 +2555,16 @@ fn window_control_btn(
         })
         .window_control_area(area)
         .child(Icon::new(icon).small())
+}
+
+fn compute_folder_git_statuses(
+    collections: &[CollectionFolder],
+) -> HashMap<String, git::GitStatusInfo> {
+    let mut map = HashMap::new();
+    for folder in collections {
+        if let Some(dir) = folder.disk_path.as_deref() {
+            map.insert(folder.id.clone(), git::inspect_folder_repo(dir));
+        }
+    }
+    map
 }

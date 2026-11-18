@@ -353,7 +353,7 @@ impl TabSession {
         let timeout_val = item.network.timeout_secs.to_string();
         let proxy_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("e.g. http://127.0.0.1:8080 (TexMITM)")
+                .placeholder("e.g. http://127.0.0.1:8080")
                 .default_value(proxy_val)
         });
         let timeout_input = cx.new(|cx| {
@@ -416,12 +416,11 @@ impl TabSession {
             .map(|c| UiCaptureRow::from_model(c, window, cx))
             .collect();
 
-        let default_subtab = if item.kind == RequestKind::WebSocket {
+        let default_subtab = if item.kind == RequestKind::WebSocket
+            || !matches!(body_kind, BodyKindUi::None)
+            || params.is_empty()
+        {
             RequestSubTab::Body
-        } else if !matches!(body_kind, BodyKindUi::None) {
-            RequestSubTab::Body
-        } else if !params.is_empty() {
-            RequestSubTab::Params
         } else {
             RequestSubTab::Params
         };

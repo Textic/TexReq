@@ -43,6 +43,14 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 pub fn inspect_repo(dir: &Path) -> GitStatusInfo {
+    inspect_repo_with_scope(dir, None)
+}
+
+pub fn inspect_folder_repo(dir: &Path) -> GitStatusInfo {
+    inspect_repo_with_scope(dir, Some("."))
+}
+
+fn inspect_repo_with_scope(dir: &Path, status_path: Option<&str>) -> GitStatusInfo {
     let git_available = git_cmd(dir).arg("--version").output().is_ok_and(|o| o.status.success());
     if !git_available || !dir.exists() {
         return GitStatusInfo {
@@ -67,7 +75,11 @@ pub fn inspect_repo(dir: &Path) -> GitStatusInfo {
         .or_else(|| run_git(dir, &["rev-parse", "--short", "HEAD"]).ok())
         .unwrap_or_else(|| "main".to_string());
 
-    let changed_files = run_git(dir, &["status", "--porcelain"])
+    let status_args: Vec<&str> = match status_path {
+        Some(path) => vec!["status", "--porcelain", "--", path],
+        None => vec!["status", "--porcelain"],
+    };
+    let changed_files = run_git(dir, &status_args)
         .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0);
 
@@ -111,22 +123,36 @@ pub fn init_repo(dir: &Path) -> Result<String, String> {
 }
 
 pub fn commit_workspace(dir: &Path, message: &str) -> Result<String, String> {
+    commit_paths(
+        dir,
+        message,
+        &["collections.json", "environments.toml", ".gitignore"],
+    )
+}
+
+pub fn commit_linked_folder(dir: &Path, message: &str) -> Result<String, String> {
+    commit_paths(dir, message, &["collection.json", ".gitignore"])
+}
+
+fn commit_paths(dir: &Path, message: &str, candidates: &[&str]) -> Result<String, String> {
     ensure_workspace_gitignore(dir);
     let mut files_to_stage = Vec::new();
-    for candidate in ["collections.json", "environments.toml", ".gitignore"] {
+    for &candidate in candidates {
         if dir.join(candidate).exists() {
             files_to_stage.push(candidate);
         }
     }
     if files_to_stage.is_empty() {
-        return Err("No TexReq collection or environment files found in workspace".to_string());
+        return Err("No TexReq collection or environment files found to commit".to_string());
     }
 
     let mut add_args = vec!["add", "--"];
-    add_args.extend(files_to_stage);
+    add_args.extend(files_to_stage.iter().copied());
     run_git(dir, &add_args)?;
 
-    let status = run_git(dir, &["status", "--porcelain", "--", "collections.json", "environments.toml", ".gitignore"])?;
+    let mut status_args = vec!["status", "--porcelain", "--"];
+    status_args.extend(files_to_stage);
+    let status = run_git(dir, &status_args)?;
     if status.trim().is_empty() {
         return Ok("Working tree is clean (nothing to commit)".to_string());
     }
@@ -176,6 +202,15 @@ mod tests {
         assert!(after.is_repo);
         assert_eq!(after.changed_files, 0);
         assert!(after.last_commit.is_some());
+
+        let subfolder = dir.join("api-col");
+        fs::create_dir_all(&subfolder).unwrap();
+        fs::write(subfolder.join("collection.json"), "{}").unwrap();
+        let scoped = inspect_folder_repo(&subfolder);
+        assert!(scoped.is_repo);
+        assert_eq!(scoped.changed_files, 1);
+        commit_linked_folder(&subfolder, "Add linked folder").expect("linked commit should succeed");
+        assert_eq!(inspect_folder_repo(&subfolder).changed_files, 0);
 
         let _ = fs::remove_dir_all(dir);
     }

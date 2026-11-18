@@ -2,7 +2,7 @@ use gpui_kit::{
     Context, SharedString, Window,
     component::{
         Disableable as _, IconName, Sizable as _, Size, StyledExt as _,
-        button::{Button, ButtonVariants as _},
+        button::{Button, ButtonRounded, ButtonVariants as _},
         checkbox::Checkbox,
         h_flex,
         input::{Editor, Input},
@@ -19,7 +19,7 @@ use gpui_kit::{
 use crate::models::{HttpMethod, RequestKind, StreamStatus};
 use crate::theme::{
     BG_BASE, BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER, BORDER_SUBTLE, RADIUS_CONTROL, RADIUS_ROW,
-    TEXT_MUTED, TEXT_PRIMARY, badge_info, crisp_resize_handle_appearance, solid,
+    TEXT_MUTED, TEXT_PRIMARY, badge_info, crisp_resize_handle_appearance, full_hit_input, solid,
 };
 use crate::ui::kv_editor::{KvTarget, render_capture_table, render_flat_subtab, render_kv_table};
 use crate::ui::tab_session::{AuthKindUi, BodyKindUi, RequestSubTab};
@@ -56,21 +56,23 @@ pub fn render_request_pane(
             // Lightweight borderless title + Save button
             h_flex()
                 .w_full()
+                .h(px(28.))
                 .items_center()
                 .justify_between()
                 .gap_2()
                 .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .px_1()
-                        .rounded(px(RADIUS_CONTROL))
-                        .hover(|s| s.bg(solid(BG_SURFACE)))
-                        .child(
-                            Input::new(&tab.name_input)
-                                .with_size(Size::XSmall)
-                                .appearance(false),
-                        ),
+                    full_hit_input(
+                        "req-name-input-slot",
+                        &tab.name_input,
+                        Input::new(&tab.name_input)
+                            .with_size(Size::XSmall)
+                            .appearance(false),
+                    )
+                    .flex_1()
+                    .min_w_0()
+                    .px_1()
+                    .rounded(px(RADIUS_CONTROL))
+                    .hover(|s| s.bg(solid(BG_SURFACE))),
                 )
                 .child(
                     Button::new("req-save-btn")
@@ -88,26 +90,31 @@ pub fn render_request_pane(
             // Clean unified Request URL bar (subtle 6px rectangle, no circles)
             h_flex()
                 .w_full()
-                .h(px(38.))
-                .px_1p5()
-                .gap_1p5()
+                .h(px(40.))
                 .items_center()
                 .bg(solid(BG_ELEVATED))
                 .border_1()
                 .border_color(solid(BORDER))
                 .rounded(px(RADIUS_ROW))
+                .overflow_hidden()
                 .child(
                     // Method / Protocol Dropdown
                     div()
+                        .h_full()
                         .flex_shrink_0()
                         .child(
                             Button::new("req-method-dropdown")
                                 .with_size(Size::Small)
                                 .ghost()
+                                .h(px(38.))
+                                .px_3()
+                                .rounded(ButtonRounded::None)
+                                .rounded_tl(px(RADIUS_ROW - 1.))
+                                .rounded_bl(px(RADIUS_ROW - 1.))
                                 .dropdown_caret(true)
                                 .child(
                                     div()
-                                        .w(px(52.))
+                                        .w(px(62.))
                                         .text_xs()
                                         .font_bold()
                                         .text_color(solid(method_hex))
@@ -163,15 +170,19 @@ pub fn render_request_pane(
                                 }),
                         ),
                 )
-                .child(div().w(px(1.)).h(px(18.)).flex_shrink_0().bg(solid(BORDER)))
+                .child(div().w(px(1.)).h(px(20.)).flex_shrink_0().bg(solid(BORDER)))
                 .child(
-                    div().flex_1().min_w_0().child(
+                    full_hit_input(
+                        "req-url-input-slot",
+                        &tab.url_input,
                         Input::new(&tab.url_input)
                             .with_size(Size::Small)
                             .appearance(false),
-                    ),
+                    )
+                    .flex_1()
+                    .min_w_0(),
                 )
-                .child(if is_realtime {
+                .child(url_bar_action_button(if is_realtime {
                     match stream_status {
                         StreamStatus::Disconnected => Button::new("req-stream-connect")
                             .with_size(Size::Small)
@@ -217,7 +228,7 @@ pub fn render_request_pane(
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.trigger_primary_action(window, cx);
                         }))
-                }),
+                })),
         )
         .child(
             // Sub-tabs bar
@@ -232,6 +243,18 @@ pub fn render_request_pane(
                         render_flat_subtab(
                             "rtab-ws-msg",
                             "WS Message",
+                            tab.req_subtab == RequestSubTab::Body,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_request_subtab(RequestSubTab::Body, cx);
+                        })),
+                    )
+                })
+                .when(!is_realtime, |this| {
+                    this.child(
+                        render_flat_subtab(
+                            "rtab-body",
+                            &format!("Body · {}", tab.body_kind.label()),
                             tab.req_subtab == RequestSubTab::Body,
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
@@ -271,16 +294,6 @@ pub fn render_request_pane(
                 )
                 .when(!is_realtime, |this| {
                     this.child(
-                        render_flat_subtab(
-                            "rtab-body",
-                            &format!("Body · {}", tab.body_kind.label()),
-                            tab.req_subtab == RequestSubTab::Body,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_request_subtab(RequestSubTab::Body, cx);
-                        })),
-                    )
-                    .child(
                         render_flat_subtab(
                             "rtab-captures",
                             &format!("Captures ({captures_cnt})"),
@@ -807,7 +820,7 @@ fn render_network_panel(ws: &Workspace, cx: &mut Context<Workspace>) -> impl Int
                         .text_xs()
                         .font_semibold()
                         .text_color(solid(TEXT_PRIMARY))
-                        .child("HTTP / HTTPS Proxy (TexMITM compatible)"),
+                        .child("HTTP / HTTPS Proxy"),
                 )
                 .child(
                     h_flex()
@@ -816,15 +829,6 @@ fn render_network_panel(ws: &Workspace, cx: &mut Context<Workspace>) -> impl Int
                             div()
                                 .flex_1()
                                 .child(Input::new(&tab.proxy_input).with_size(Size::Small)),
-                        )
-                        .child(
-                            Button::new("net-texmitm")
-                                .with_size(Size::Small)
-                                .secondary()
-                                .label("TexMITM (127.0.0.1:8080)")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.set_proxy_preset("http://127.0.0.1:8080", window, cx);
-                                })),
                         )
                         .child(
                             Button::new("net-proxy-clear")
@@ -878,4 +882,15 @@ fn render_network_panel(ws: &Workspace, cx: &mut Context<Workspace>) -> impl Int
                         })),
                 ),
         )
+}
+
+/// Styles the right-most action button inside the unified URL bar so it sits
+/// flush against the top, right, and bottom inner edges of the outer border.
+fn url_bar_action_button(btn: Button) -> Button {
+    btn.h_full()
+        .px_4()
+        .flex_shrink_0()
+        .rounded(ButtonRounded::None)
+        .rounded_tr(px(RADIUS_ROW - 1.))
+        .rounded_br(px(RADIUS_ROW - 1.))
 }

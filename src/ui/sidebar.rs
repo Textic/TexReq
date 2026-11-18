@@ -15,10 +15,11 @@ use gpui_kit::{
 
 use crate::net::updater::UpdateState;
 use crate::theme::{
-    BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER_SUBTLE, COLOR_DELETE, RADIUS_CONTROL, RADIUS_ROW,
-    TEXT_MUTED, TEXT_PRIMARY, badge_info, render_app_badge, solid, status_color,
+    ACCENT_BLUE, BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER_SUBTLE, COLOR_DELETE, COLOR_GET,
+    RADIUS_CONTROL, RADIUS_ROW, TEXT_MUTED, TEXT_PRIMARY, badge_info, full_hit_input,
+    render_app_badge, solid, status_color,
 };
-use crate::ui::workspace::{RightDrawerTab, SidebarMode, Workspace};
+use crate::ui::workspace::{SidebarMode, Workspace};
 
 pub fn render_sidebar(
     ws: &Workspace,
@@ -27,7 +28,7 @@ pub fn render_sidebar(
 ) -> impl IntoElement {
     let query = ws.search_input.read(cx).value().trim().to_ascii_lowercase();
     let mode = ws.sidebar_mode;
-    let settings_active = ws.active_drawer == Some(RightDrawerTab::Settings);
+    let settings_active = ws.show_settings_modal;
     let update_available = matches!(ws.update_state, UpdateState::Available(_));
     let active_saved_id = ws
         .active_tab()
@@ -41,7 +42,7 @@ pub fn render_sidebar(
             // Seamless sidebar header with circular app mark (drag handle on brand text)
             h_flex()
                 .w_full()
-                .h(px(38.))
+                .h(px(40.))
                 .px_3()
                 .items_center()
                 .justify_between()
@@ -85,6 +86,16 @@ pub fn render_sidebar(
                                     this.create_folder(cx);
                                 })),
                         )
+                        .child(
+                            Button::new("sb-link-folder")
+                                .with_size(Size::XSmall)
+                                .ghost()
+                                .icon(IconName::FolderOpen)
+                                .tooltip("Link collection folder from disk (Git / external)")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.link_collection_folder_dialog(window, cx);
+                                })),
+                        )
                         .child({
                             let btn = Button::new("sb-settings")
                                 .with_size(Size::XSmall)
@@ -94,8 +105,8 @@ pub fn render_sidebar(
                                 } else {
                                     "Settings"
                                 })
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.toggle_drawer_no_window(RightDrawerTab::Settings, cx);
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_settings_modal(window, cx);
                                 }));
                             if settings_active {
                                 btn.secondary()
@@ -128,12 +139,16 @@ pub fn render_sidebar(
                                 .text_color(solid(TEXT_MUTED)),
                         )
                         .child(
-                            div().flex_1().min_w_0().child(
+                            full_hit_input(
+                                "sb-search-input-slot",
+                                &ws.search_input,
                                 Input::new(&ws.search_input)
                                     .with_size(Size::XSmall)
                                     .appearance(false)
                                     .cleanable(true),
-                            ),
+                            )
+                            .flex_1()
+                            .min_w_0(),
                         ),
                 )
                 .child(
@@ -246,6 +261,27 @@ fn render_collections_list(
             let folder_id = folder.id.clone();
             let folder_id_add = folder.id.clone();
             let folder_id_del = folder.id.clone();
+            let folder_id_git = folder.id.clone();
+            let is_linked = folder.disk_path.is_some();
+            let git_pill = if is_linked {
+                match ws.folder_git_statuses.get(&folder.id) {
+                    Some(info) if info.is_repo => {
+                        let label = if info.changed_files > 0 {
+                            format!("{} *{}", info.branch, info.changed_files)
+                        } else {
+                            info.branch.clone()
+                        };
+                        Some((label, COLOR_GET, "Git repository — click to commit/pull/push"))
+                    }
+                    _ => Some((
+                        "Disk".to_string(),
+                        TEXT_MUTED,
+                        "Linked disk folder (no Git) — click to manage or initialize Git",
+                    )),
+                }
+            } else {
+                None
+            };
             let expanded = folder.expanded || !query.is_empty();
 
             let matching_requests: Vec<_> = folder
@@ -298,7 +334,7 @@ fn render_collections_list(
                                 IconName::FolderClosed
                             })
                             .size_3p5()
-                            .text_color(solid(TEXT_MUTED)),
+                            .text_color(solid(if is_linked { ACCENT_BLUE } else { TEXT_MUTED })),
                         )
                         .child(
                             div()
@@ -310,6 +346,34 @@ fn render_collections_list(
                                 .text_color(solid(TEXT_PRIMARY))
                                 .child(SharedString::from(folder.name.clone())),
                         )
+                        .when_some(git_pill, |row, (pill_text, pill_color, pill_tip)| {
+                            row.child(
+                                Button::new(("folder-git", f_ix))
+                                    .with_size(Size::XSmall)
+                                    .ghost()
+                                    .tooltip(pill_tip)
+                                    .child(
+                                        div()
+                                            .px_1p5()
+                                            .py_0p5()
+                                            .rounded(px(3.))
+                                            .bg(solid(BG_SURFACE))
+                                            .border_1()
+                                            .border_color(solid(BORDER_SUBTLE))
+                                            .text_xs()
+                                            .text_color(solid(pill_color))
+                                            .child(SharedString::from(pill_text)),
+                                    )
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        cx.stop_propagation();
+                                        this.open_folder_git_settings(
+                                            &folder_id_git,
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                        })
                         .child(
                             Button::new(("folder-add-req", f_ix))
                                 .with_size(Size::XSmall)
@@ -326,10 +390,14 @@ fn render_collections_list(
                                 .with_size(Size::XSmall)
                                 .ghost()
                                 .icon(IconName::Close)
-                                .tooltip("Delete folder")
+                                .tooltip(if is_linked {
+                                    "Unlink folder from sidebar"
+                                } else {
+                                    "Delete folder"
+                                })
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
-                                    this.delete_folder(&folder_id_del, cx);
+                                    this.request_remove_folder(&folder_id_del, cx);
                                 })),
                         ),
                 )
@@ -376,7 +444,7 @@ fn render_collections_list(
                                         }))
                                         .child(
                                             div()
-                                                .w(px(38.))
+                                                .w(px(46.))
                                                 .flex_shrink_0()
                                                 .text_xs()
                                                 .font_bold()
@@ -446,7 +514,7 @@ fn render_history_list(
                         .icon(IconName::Delete)
                         .label("Clear")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.clear_history(cx);
+                            this.request_clear_history(cx);
                         })),
                 ),
             )
