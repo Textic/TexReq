@@ -6,7 +6,7 @@ use futures_channel::mpsc::unbounded;
 use futures_util::StreamExt as _;
 use gpui_kit::{
     App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, Focusable, KeyDownEvent,
-    SharedString, Window, WindowControlArea,
+    PathPromptOptions, SharedString, Window, WindowControlArea,
     component::{
         Icon, IconName, Sizable as _, Size, StyledExt as _,
         button::{Button, ButtonVariants as _},
@@ -120,6 +120,7 @@ pub struct Workspace {
     pub mcp_notice: Option<String>,
     pub network_notice: Option<String>,
     pub mcp_json_viewer: Entity<gpui_kit::component::input::EditorState>,
+    pub picker_open: bool,
 }
 
 impl Focusable for Workspace {
@@ -262,6 +263,7 @@ impl Workspace {
             mcp_notice: None,
             network_notice: None,
             mcp_json_viewer,
+            picker_open: false,
         };
 
         ws.refresh_snippet_editor(window, cx);
@@ -429,12 +431,65 @@ impl Workspace {
         cx.notify();
     }
 
-    pub fn link_collection_folder_dialog(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(folder_dir) = rfd::FileDialog::new().pick_folder() else {
+    /// Opens GPUI's non-blocking native path picker after the active click event finishes so OS
+    /// modal loops never re-enter GPUI while `App`'s mutable `RefCell` borrow is held.
+    fn pick_single_path(
+        &mut self,
+        files: bool,
+        directories: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        on_picked: impl FnOnce(&mut Self, PathBuf, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        if self.picker_open {
             return;
-        };
+        }
+        self.picker_open = true;
+
+        cx.spawn_in(window, async move |this, cx| {
+            let rx = cx
+                .update(|_window, cx| {
+                    cx.prompt_for_paths(PathPromptOptions {
+                        files,
+                        directories,
+                        multiple: false,
+                        prompt: None,
+                    })
+                })
+                .ok();
+            let res = match rx {
+                Some(rx) => rx.await.ok(),
+                None => None,
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.picker_open = false;
+                match res {
+                    Some(Ok(Some(paths))) => {
+                        if let Some(path) = paths.into_iter().next() {
+                            on_picked(this, path, window, cx);
+                        }
+                    }
+                    Some(Ok(None)) | None => {}
+                    Some(Err(err)) => {
+                        this.git_notice = Some(format!("Failed to open path dialog: {err}"));
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub fn link_collection_folder_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.pick_single_path(false, true, window, cx, |this, folder_dir, _window, cx| {
+            this.apply_linked_collection_folder(folder_dir, cx);
+        });
+    }
+
+    fn apply_linked_collection_folder(&mut self, folder_dir: PathBuf, cx: &mut Context<Self>) {
         let normalized = folder_dir.to_string_lossy().to_string();
-        let canonical_target = std::fs::canonicalize(&folder_dir).unwrap_or_else(|_| folder_dir.clone());
+        let canonical_target =
+            std::fs::canonicalize(&folder_dir).unwrap_or_else(|_| folder_dir.clone());
         if let Some(existing) = self.collections.iter_mut().find(|f| {
             f.disk_path.as_ref().is_some_and(|p| {
                 std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == canonical_target
@@ -842,9 +897,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(path) = rfd::FileDialog::new().pick_file() {
+        let row_id = row_id.to_string();
+        self.pick_single_path(true, false, window, cx, move |this, path, window, cx| {
             let p_str = path.to_string_lossy().to_string();
-            if let Some(tab) = self.active_tab_mut()
+            if let Some(tab) = this.active_tab_mut()
                 && let Some(row) = tab.multipart_rows.iter_mut().find(|r| r.id == row_id)
             {
                 row.is_file = true;
@@ -853,19 +909,19 @@ impl Workspace {
                 tab.dirty = true;
             }
             cx.notify();
-        }
+        });
     }
 
     pub fn pick_binary_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(path) = rfd::FileDialog::new().pick_file() {
+        self.pick_single_path(true, false, window, cx, |this, path, window, cx| {
             let p_str = path.to_string_lossy().to_string();
-            if let Some(tab) = self.active_tab_mut() {
+            if let Some(tab) = this.active_tab_mut() {
                 tab.binary_path_input
                     .update(cx, |s, cx| s.set_value(p_str, window, cx));
                 tab.dirty = true;
             }
             cx.notify();
-        }
+        });
     }
 
     pub fn capture_toggle(&mut self, row_id: &str, enabled: bool, cx: &mut Context<Self>) {
@@ -1429,12 +1485,10 @@ impl Workspace {
     }
 
     pub fn import_dotenv_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Env files", &["env", "txt"])
-            .pick_file()
-        else {
-            return;
-        };
+        self.pick_single_path(true, false, window, cx, Self::apply_dotenv_file);
+    }
+
+    fn apply_dotenv_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let Ok(content) = std::fs::read_to_string(&path) else {
             if let Some(tab) = self.active_tab_mut() {
                 tab.last_error = Some("Failed to read .env file.".to_string());
@@ -1774,10 +1828,9 @@ impl Workspace {
     }
 
     pub fn pick_workspace_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(folder) = rfd::FileDialog::new().pick_folder() else {
-            return;
-        };
-        self.switch_workspace_dir(Some(folder), window, cx);
+        self.pick_single_path(false, true, window, cx, |this, folder, window, cx| {
+            this.switch_workspace_dir(Some(folder), window, cx);
+        });
     }
 
     pub fn reset_workspace_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
