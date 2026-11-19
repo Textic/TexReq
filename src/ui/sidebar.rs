@@ -14,7 +14,6 @@ use gpui_kit::{
     px,
 };
 
-use crate::net::updater::UpdateState;
 use crate::theme::{
     ACCENT_BLUE, BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER_SUBTLE, COLOR_DELETE, COLOR_GET,
     RADIUS_CONTROL, RADIUS_ROW, TEXT_MUTED, TEXT_PRIMARY, badge_info, full_hit_input,
@@ -30,7 +29,7 @@ pub fn render_sidebar(
     let query = ws.search_input.read(cx).value().trim().to_ascii_lowercase();
     let mode = ws.sidebar_mode;
     let settings_active = ws.show_settings_modal;
-    let update_available = matches!(ws.update_state, UpdateState::Available(_));
+    let update_available = ws.update_state.has_pending_update();
     let active_saved_id = ws
         .active_tab()
         .and_then(|t| t.saved_request_id.clone());
