@@ -108,6 +108,7 @@ pub struct Workspace {
     pub settings_proxy_input: Entity<gpui_kit::component::input::InputState>,
     pub git_commit_msg_input: Entity<gpui_kit::component::input::InputState>,
     pub update_state: UpdateState,
+    pub last_update_info: Option<updater::UpdateInfo>,
     pub folder_counter: usize,
     pub folder_git_statuses: HashMap<String, git::GitStatusInfo>,
     pub personal_git_status: git::GitStatusInfo,
@@ -282,6 +283,7 @@ impl Workspace {
             settings_proxy_input,
             git_commit_msg_input,
             update_state: UpdateState::Idle,
+            last_update_info: None,
             folder_counter,
             folder_git_statuses,
             personal_git_status: git::GitStatusInfo::default(),
@@ -2547,13 +2549,16 @@ impl Workspace {
     }
 
     pub fn check_for_updates(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.update_state, UpdateState::Checking) {
+        if self.update_state.is_busy() {
             return;
         }
         self.run_update_check(true, cx);
     }
 
     fn run_update_check(&mut self, manual: bool, cx: &mut Context<Self>) {
+        if self.update_state.is_busy() {
+            return;
+        }
         if manual {
             self.update_state = UpdateState::Checking;
             cx.notify();
@@ -2567,8 +2572,17 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             if let Some(res) = rx.next().await {
                 let _ = this.update(cx, |this, cx| {
+                    if matches!(
+                        this.update_state,
+                        UpdateState::Downloading { .. } | UpdateState::Installing(_)
+                    ) {
+                        return;
+                    }
                     this.update_state = match res {
-                        Ok(Some(info)) => UpdateState::Available(info),
+                        Ok(Some(info)) => {
+                            this.last_update_info = Some(info.clone());
+                            UpdateState::Available(info)
+                        }
                         Ok(None) => {
                             if manual {
                                 UpdateState::UpToDate
@@ -2591,11 +2605,134 @@ impl Workspace {
         .detach();
     }
 
-    pub fn open_update_download(&mut self, cx: &mut Context<Self>) {
-        let url = match &self.update_state {
-            UpdateState::Available(info) => info.download_url.clone(),
-            _ => updater::RELEASES_PAGE_URL.to_string(),
+    fn current_or_last_update_info(&self) -> Option<&updater::UpdateInfo> {
+        match &self.update_state {
+            UpdateState::Available(info)
+            | UpdateState::Downloading { info, .. }
+            | UpdateState::Installing(info) => Some(info),
+            _ => self.last_update_info.as_ref(),
+        }
+    }
+
+    pub fn start_update_install(&mut self, cx: &mut Context<Self>) {
+        if self.update_state.is_busy() {
+            return;
+        }
+        let Some(info) = self.current_or_last_update_info().cloned() else {
+            return;
         };
+        self.last_update_info = Some(info.clone());
+
+        if !info.supports_in_app_install() {
+            self.open_update_download(cx);
+            return;
+        }
+
+        self.update_state = UpdateState::Downloading {
+            info: info.clone(),
+            downloaded_bytes: 0,
+            total_bytes: None,
+        };
+        cx.notify();
+
+        enum InstallMsg {
+            Progress { downloaded: u64, total: Option<u64> },
+            Staged(Box<updater::StagedUpdate>),
+            Failed(String),
+        }
+
+        let (tx, mut rx) = unbounded::<InstallMsg>();
+        spawn_tokio(async move {
+            let outcome = updater::download_and_stage_update(&info, |downloaded, total| {
+                let _ = tx.unbounded_send(InstallMsg::Progress { downloaded, total });
+            })
+            .await;
+
+            match outcome {
+                Ok(staged) => {
+                    let _ = tx.unbounded_send(InstallMsg::Staged(Box::new(staged)));
+                }
+                Err(err) => {
+                    let _ = tx.unbounded_send(InstallMsg::Failed(err));
+                }
+            }
+        });
+
+        cx.spawn(async move |this, cx| {
+            while let Some(msg) = rx.next().await {
+                match msg {
+                    InstallMsg::Progress { downloaded, total } => {
+                        let _ = this.update(cx, |this, cx| {
+                            if let UpdateState::Downloading {
+                                downloaded_bytes,
+                                total_bytes,
+                                ..
+                            } = &mut this.update_state
+                            {
+                                *downloaded_bytes = downloaded;
+                                *total_bytes = total;
+                                cx.notify();
+                            }
+                        });
+                    }
+                    InstallMsg::Failed(err) => {
+                        let _ = this.update(cx, |this, cx| {
+                            this.update_state = UpdateState::Failed(err);
+                            cx.notify();
+                        });
+                        break;
+                    }
+                    InstallMsg::Staged(staged) => {
+                        let install_info = staged.info.clone();
+                        let updated = this
+                            .update(cx, |this, cx| {
+                                this.update_state = UpdateState::Installing(install_info);
+                                this.autosave_saved_tabs(cx);
+                                this.save_active_env_vars_silent(cx);
+                                this.store.save_settings(&this.settings);
+                                cx.notify();
+                            })
+                            .is_ok();
+                        if !updated {
+                            let _ = std::fs::remove_dir_all(&staged.stage_dir);
+                            break;
+                        }
+
+                        // Let the UI visibly render "Installing..." before closing TexReq.
+                        let (delay_tx, mut delay_rx) = unbounded::<()>();
+                        spawn_tokio(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+                            let _ = delay_tx.unbounded_send(());
+                        });
+                        let _ = delay_rx.next().await;
+
+                        match updater::spawn_detached_updater(&staged) {
+                            Ok(()) => {
+                                let _ = this.update(cx, |_, cx| {
+                                    cx.quit();
+                                });
+                            }
+                            Err(err) => {
+                                let _ = std::fs::remove_dir_all(&staged.stage_dir);
+                                let _ = this.update(cx, |this, cx| {
+                                    this.update_state = UpdateState::Failed(err);
+                                    cx.notify();
+                                });
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        })
+        .detach();
+    }
+
+    pub fn open_update_download(&mut self, cx: &mut Context<Self>) {
+        let url = self
+            .current_or_last_update_info()
+            .map(|info| info.download_url.clone())
+            .unwrap_or_else(|| updater::RELEASES_PAGE_URL.to_string());
         if let Err(err) = updater::open_url_in_browser(&url) {
             self.update_state = UpdateState::Failed(err);
             cx.notify();
@@ -2603,10 +2740,10 @@ impl Workspace {
     }
 
     pub fn open_release_notes(&mut self, cx: &mut Context<Self>) {
-        let url = match &self.update_state {
-            UpdateState::Available(info) => info.release_url.clone(),
-            _ => updater::RELEASES_PAGE_URL.to_string(),
-        };
+        let url = self
+            .current_or_last_update_info()
+            .map(|info| info.release_url.clone())
+            .unwrap_or_else(|| updater::RELEASES_PAGE_URL.to_string());
         if let Err(err) = updater::open_url_in_browser(&url) {
             self.update_state = UpdateState::Failed(err);
             cx.notify();
@@ -2699,8 +2836,38 @@ impl Render for Workspace {
         let split_horizontal = self.split_horizontal;
         let show_sidebar = self.show_sidebar;
         let active_tab_id = self.active_tab_id.clone();
-        let available_update = match &self.update_state {
-            UpdateState::Available(info) => Some(info.clone()),
+        let top_update_pill: Option<(SharedString, SharedString)> = match &self.update_state {
+            UpdateState::Available(info) => Some((
+                SharedString::from(format!("Update {}", info.tag_name)),
+                SharedString::from("New TexReq version available in Settings"),
+            )),
+            UpdateState::Downloading {
+                info,
+                downloaded_bytes,
+                total_bytes,
+            } => {
+                let label = match total_bytes {
+                    Some(total) if *total > 0 => {
+                        let pct = ((*downloaded_bytes as f64 / *total as f64) * 100.0)
+                            .clamp(0.0, 100.0)
+                            .round() as u64;
+                        format!("Downloading {} ({pct}%)", info.tag_name)
+                    }
+                    _ => format!(
+                        "Downloading {} ({})",
+                        info.tag_name,
+                        updater::format_bytes(*downloaded_bytes)
+                    ),
+                };
+                Some((
+                    SharedString::from(label),
+                    SharedString::from("Click to view download progress in Settings"),
+                ))
+            }
+            UpdateState::Installing(info) => Some((
+                SharedString::from(format!("Installing {}...", info.tag_name)),
+                SharedString::from("Installing update and restarting TexReq..."),
+            )),
             _ => None,
         };
 
@@ -2849,14 +3016,14 @@ impl Render for Workspace {
                             .h_full()
                             .gap_1p5()
                             .items_center()
-                            .when_some(available_update, |bar, info| {
+                            .when_some(top_update_pill, |bar, (label, tooltip)| {
                                 bar.child(
                                     Button::new("top-update-pill")
                                         .with_size(Size::XSmall)
                                         .secondary()
                                         .icon(IconName::ArrowDown)
-                                        .label(SharedString::from(format!("Update {}", info.tag_name)))
-                                        .tooltip("New TexReq version available in Settings")
+                                        .label(label)
+                                        .tooltip(tooltip)
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.open_settings(SettingsCategory::Info, window, cx);
                                         })),

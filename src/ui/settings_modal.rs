@@ -13,10 +13,11 @@ use gpui_kit::{
 };
 
 use crate::mcp::installer::{McpClient, McpClientStatus};
-use crate::net::updater::{CURRENT_VERSION, REPO_URL, UpdateState};
+use crate::net::updater::{CURRENT_VERSION, REPO_URL, UpdateState, format_bytes};
 use crate::theme::{
-    ACCENT_BLUE, BG_BASE, BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER, BORDER_SUBTLE, COLOR_GET,
-    COLOR_POST, RADIUS_CONTROL, RADIUS_ROW, TEXT_MUTED, TEXT_PRIMARY, render_app_badge, solid,
+    ACCENT_BLUE, BG_BASE, BG_ELEVATED, BG_HOVER, BG_SURFACE, BORDER, BORDER_SUBTLE, COLOR_DELETE,
+    COLOR_GET, COLOR_POST, RADIUS_CONTROL, RADIUS_ROW, TEXT_MUTED, TEXT_PRIMARY, render_app_badge,
+    solid,
 };
 use crate::ui::workspace::Workspace;
 
@@ -245,7 +246,7 @@ pub fn render_settings_modal(
     cx: &mut Context<Workspace>,
 ) -> impl IntoElement {
     let active_cat = ws.settings_category;
-    let update_available = matches!(ws.update_state, UpdateState::Available(_));
+    let update_available = ws.update_state.has_pending_update();
 
     div()
         .id("settings-modal-root")
@@ -1348,6 +1349,11 @@ fn render_info_pane(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEle
 fn render_updates_card(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
     let state = &ws.update_state;
     let is_checking = matches!(state, UpdateState::Checking);
+    let is_busy = state.is_busy();
+    let can_retry = ws
+        .last_update_info
+        .as_ref()
+        .is_some_and(|info| info.supports_in_app_install());
 
     v_flex()
         .w_full()
@@ -1391,64 +1397,190 @@ fn render_updates_card(ws: &Workspace, cx: &mut Context<Workspace>) -> impl Into
                 .text_color(solid(COLOR_GET))
                 .child("You are on the latest version.")
                 .into_any_element(),
-            UpdateState::Available(info) => v_flex()
-                .gap_2()
+            UpdateState::Available(info) => {
+                let in_app = info.supports_in_app_install();
+                v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(solid(COLOR_GET))
+                            .child(SharedString::from(if info.published_at.is_empty() {
+                                format!("Version {} is available", info.tag_name)
+                            } else {
+                                format!("Version {} available ({})", info.tag_name, info.published_at)
+                            })),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1p5()
+                            .flex_wrap()
+                            .child(
+                                Button::new("set-update-download")
+                                    .with_size(Size::XSmall)
+                                    .primary()
+                                    .icon(IconName::ArrowDown)
+                                    .label(SharedString::from(if in_app {
+                                        format!("Download & Install {}", info.tag_name)
+                                    } else {
+                                        format!("Download {}", info.tag_name)
+                                    }))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if in_app {
+                                            this.start_update_install(cx);
+                                        } else {
+                                            this.open_update_download(cx);
+                                        }
+                                    })),
+                            )
+                            .when(in_app, |row| {
+                                row.child(
+                                    Button::new("set-update-browser")
+                                        .with_size(Size::XSmall)
+                                        .secondary()
+                                        .label("Browser")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.open_update_download(cx);
+                                        })),
+                                )
+                            })
+                            .child(
+                                Button::new("set-update-notes")
+                                    .with_size(Size::XSmall)
+                                    .ghost()
+                                    .label("Release Notes")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.open_release_notes(cx);
+                                    })),
+                            ),
+                    )
+                    .into_any_element()
+            }
+            UpdateState::Downloading {
+                info,
+                downloaded_bytes,
+                total_bytes,
+            } => {
+                let (status_text, fraction) = match total_bytes {
+                    Some(total) if *total > 0 => {
+                        let frac = (*downloaded_bytes as f32 / *total as f32).clamp(0.0, 1.0);
+                        let pct = (frac * 100.0).round() as u64;
+                        (
+                            format!(
+                                "Downloading {} — {} / {} ({pct}%)",
+                                info.tag_name,
+                                format_bytes(*downloaded_bytes),
+                                format_bytes(*total),
+                            ),
+                            frac,
+                        )
+                    }
+                    _ => (
+                        format!(
+                            "Downloading {} — {}...",
+                            info.tag_name,
+                            format_bytes(*downloaded_bytes),
+                        ),
+                        0.25,
+                    ),
+                };
+
+                v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(solid(TEXT_PRIMARY))
+                            .child(SharedString::from(status_text)),
+                    )
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(6.0))
+                            .bg(solid(BG_BASE))
+                            .border_1()
+                            .border_color(solid(BORDER_SUBTLE))
+                            .rounded(px(3.0))
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(relative(fraction))
+                                    .bg(solid(ACCENT_BLUE)),
+                            ),
+                    )
+                    .into_any_element()
+            }
+            UpdateState::Installing(info) => v_flex()
+                .gap_1()
                 .child(
                     div()
                         .text_xs()
                         .font_semibold()
                         .text_color(solid(COLOR_GET))
-                        .child(SharedString::from(if info.published_at.is_empty() {
-                            format!("Version {} is available", info.tag_name)
-                        } else {
-                            format!("Version {} available ({})", info.tag_name, info.published_at)
-                        })),
+                        .child(SharedString::from(format!("Installing {}...", info.tag_name))),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(solid(TEXT_MUTED))
+                        .child("Closing TexReq, applying update, and restarting automatically..."),
+                )
+                .into_any_element(),
+            UpdateState::Failed(err) => v_flex()
+                .gap_2()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(solid(COLOR_DELETE))
+                        .child(SharedString::from(err.clone())),
                 )
                 .child(
                     h_flex()
                         .gap_1p5()
+                        .when(can_retry, |row| {
+                            row.child(
+                                Button::new("set-update-retry")
+                                    .with_size(Size::XSmall)
+                                    .primary()
+                                    .icon(IconName::RefreshCw)
+                                    .label("Retry")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.start_update_install(cx);
+                                    })),
+                            )
+                        })
                         .child(
-                            Button::new("set-update-download")
-                                .with_size(Size::XSmall)
-                                .primary()
-                                .icon(IconName::ArrowDown)
-                                .label(SharedString::from(format!("Download {}", info.tag_name)))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.open_update_download(cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("set-update-notes")
+                            Button::new("set-update-fallback")
                                 .with_size(Size::XSmall)
                                 .ghost()
-                                .label("Release Notes")
+                                .label("Open Releases")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    this.open_release_notes(cx);
+                                    this.open_update_download(cx);
                                 })),
                         ),
                 )
                 .into_any_element(),
-            UpdateState::Failed(err) => div()
-                .text_xs()
-                .text_color(solid(TEXT_MUTED))
-                .child(SharedString::from(err.clone()))
-                .into_any_element(),
         })
-        .child(
-            h_flex().justify_end().child(
-                Button::new("set-check-updates")
-                    .with_size(Size::XSmall)
-                    .secondary()
-                    .disabled(is_checking)
-                    .icon(IconName::RefreshCw)
-                    .label(if is_checking {
-                        "Checking..."
-                    } else {
-                        "Check for Updates"
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.check_for_updates(cx);
-                    })),
-            ),
-        )
+        .when(!matches!(state, UpdateState::Installing(_)), |card| {
+            card.child(
+                h_flex().justify_end().child(
+                    Button::new("set-check-updates")
+                        .with_size(Size::XSmall)
+                        .secondary()
+                        .disabled(is_busy)
+                        .icon(IconName::RefreshCw)
+                        .label(if is_checking {
+                            "Checking..."
+                        } else {
+                            "Check for Updates"
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.check_for_updates(cx);
+                        })),
+                ),
+            )
+        })
 }
